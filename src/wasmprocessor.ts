@@ -41,6 +41,10 @@ export class WasmProcessor {
         }
     }
 
+    getVersion(): string {
+        return get_version();
+    }
+
     async processFile(
         content: string, 
         progressCallback?: (progress: number, label: string) => void

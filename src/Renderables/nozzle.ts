@@ -29,6 +29,7 @@ export default class Nozzle {
    private nozzleBody: Mesh
    private hotEnd: Mesh
    private material: StandardMaterial
+   private hotEndMaterial: StandardMaterial
    
    // Configuration
    nozzleDiameter: number = 0.4 // Default nozzle diameter in mm
@@ -102,11 +103,11 @@ export default class Nozzle {
       this.nozzleBody.material = this.material
 
       // Hot end gets different material
-      const hotEndMaterial = new StandardMaterial('hotEndMaterial', this.scene)
-      hotEndMaterial.diffuseColor = this.hotEndColor
-      hotEndMaterial.specularColor = new Color3(0.2, 0.2, 0.2)
-      hotEndMaterial.roughness = 0.8
-      this.hotEnd.material = hotEndMaterial
+      this.hotEndMaterial = new StandardMaterial('hotEndMaterial', this.scene)
+      this.hotEndMaterial.diffuseColor = this.hotEndColor
+      this.hotEndMaterial.specularColor = new Color3(0.2, 0.2, 0.2)
+      this.hotEndMaterial.roughness = 0.8
+      this.hotEnd.material = this.hotEndMaterial
    }
 
    setDiameter(diameter: number): void {
@@ -327,6 +328,9 @@ export default class Nozzle {
       }
       if (this.material) {
          this.material.dispose()
+      }
+      if (this.hotEndMaterial) {
+         this.hotEndMaterial.dispose()
       }
    }
 

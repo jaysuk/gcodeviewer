@@ -31,6 +31,7 @@ export function doArc(tokens, currentPosition, relativeMove, arcSegLength, fixRa
 
    let i = 0,
       j = 0,
+      k = 0,
       r = 0
    const cw = tokens.some((t) => t.includes('G2'))
    //read params
@@ -64,9 +65,9 @@ export function doArc(tokens, currentPosition, relativeMove, arcSegLength, fixRa
             break //y offset from current position
          case 'K':
             {
-               j = getNumber(token, j, false, 0)
+               k = getNumber(token, k, false, 0)
             }
-            break
+            break // z offset from current position
          case 'R':
             {
                r = getNumber(token, r, false, 0)
@@ -75,6 +76,8 @@ export function doArc(tokens, currentPosition, relativeMove, arcSegLength, fixRa
       }
    }
 
+   // From here on, i/j are reused generically as "axis0 offset"/"axis1 offset" - the block below
+   // routes I/J/K into those two slots per RS274 convention (G17/XY: I,J - G18/XZ: I,K - G19/YZ: J,K)
    let axis0 = 'x'
    let axis1 = 'y'
    let axis2 = 'z'
@@ -91,9 +94,9 @@ export function doArc(tokens, currentPosition, relativeMove, arcSegLength, fixRa
             axis0 = 'z' //Have to invert for correct arc direction per RRF
             axis1 = 'x'
             axis2 = 'y'
-            const temp = j //swap i and j
-            j = i
-            i = temp
+            const originalI = i
+            i = k // axis0 (z) offset comes from K
+            j = originalI // axis1 (x) offset comes from I
          }
          break
       case 'YZ':
@@ -101,6 +104,8 @@ export function doArc(tokens, currentPosition, relativeMove, arcSegLength, fixRa
             axis0 = 'y'
             axis1 = 'z'
             axis2 = 'x'
+            i = j // axis0 (y) offset comes from J
+            j = k // axis1 (z) offset comes from K
          }
          break
    }

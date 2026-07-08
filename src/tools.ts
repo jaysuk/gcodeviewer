@@ -10,10 +10,15 @@ export default class Tool {
    }
 }
 
-export const tools = [
-   new Tool(0, new Color4(1, 0, 0, 1)),
-   new Tool(1, new Color4(0, 1, 0, 1)),
-   new Tool(2, new Color4(0, 0, 1, 1)),
-   new Tool(3, new Color4(1, 1, 0, 1)),
-   new Tool(4, new Color4(1, 0, 1, 1)),
-]
+// A fresh array must be built per call - ProcessorProperties previously shared one mutable
+// module-level array across every instance, so tool colors set via Processor.setTools leaked
+// between/were clobbered by unrelated instances
+export function createDefaultTools(): Tool[] {
+   return [
+      new Tool(0, new Color4(1, 0, 0, 1)),
+      new Tool(1, new Color4(0, 1, 0, 1)),
+      new Tool(2, new Color4(0, 0, 1, 1)),
+      new Tool(3, new Color4(1, 1, 0, 1)),
+      new Tool(4, new Color4(1, 0, 1, 1)),
+   ]
+}

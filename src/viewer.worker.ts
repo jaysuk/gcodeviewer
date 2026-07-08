@@ -57,9 +57,6 @@ self.addEventListener('message', async (message) => {
       case 'rendermode':
          self.viewer.processor.modelMaterial.forEach((m) => m.updateRenderMode(message.data.mode))
          break
-      case 'updatecolortest':
-         await self.viewer.processor.updateColorTest()
-         break
       case 'updatefileposition':
          self.viewer.processor.updateFilePosition(message.data.position, message.data.animate || false)
          break
@@ -112,6 +109,9 @@ self.addEventListener('message', async (message) => {
          break
       case 'showViewBox':
          self.viewer.showViewBox(message.data.visible)
+         break
+      case 'setPickingEnabled':
+         self.viewer.setPickingEnabled(message.data.enabled)
          break
       case 'setCameraDirection':
          self.viewer.setCameraDirection(message.data.direction)

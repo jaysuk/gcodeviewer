@@ -11,8 +11,8 @@ const fastGCodeRegex = /^([GMT])(\d{1,3})/i
 // Ultra-fast parser for the most common G0/G1 patterns
 function parseG0G1Fast(props: ProcessorProperties, line: string): Base | null {
    // Pattern: G0/G1 X123.45 Y67.89 Z1.23 E4.56 F1500
-   // Skip if line has special characters that need complex parsing
-   if (line.includes(';') || line.includes('G53') || line.includes('(')) return null
+   // Skip if line has special characters that need complex parsing, or belt-printer kinematics (only g0g1.ts implements the gantry-angle transform)
+   if (line.includes(';') || line.includes('G53') || line.includes('(') || props.zBelt) return null
    
    let x: number | null = null
    let y: number | null = null  
@@ -87,7 +87,8 @@ function parseG0G1Fast(props: ProcessorProperties, line: string): Base | null {
    }
    
    if (isG1) {
-      props.currentTool.color.toArray(move.color)
+      // move.color already comes from the slicer feature (set in Move's constructor) - matches
+      // the WASM parser and the slow-path g0g1.ts (tool color has its own render mode, 1)
       move.extruding = props.cncMode
    }
    
@@ -172,19 +173,27 @@ export function ProcessLine(props: ProcessorProperties, line: string): Base {
    }
    
    // Ultra-fast path for common G0/G1 moves (80%+ of lines)
-   if ((workingLine[0] === 'G' || workingLine[0] === 'g') && 
-       (workingLine[1] === '0' || workingLine[1] === '1') &&
-       (workingLine[2] === ' ' || workingLine[2] === '0')) {
-      const fastResult = parseG0G1Fast(props, line)
-      if (fastResult) {
-         // Apply firstGCodeByte/lastGCodeByte logic
-         if (props.firstGCodeByte == 0 && fastResult.lineType == 'L') {
-            props.firstGCodeByte = fastResult.filePosition
+   // The command token must be exactly G0/G1/G00/G01 (not G10, G11, G28, ...), so scan the
+   // full digit run after 'G' rather than just peeking at the next one or two characters.
+   if (workingLine[0] === 'G' || workingLine[0] === 'g') {
+      let digitsEnd = 1
+      while (digitsEnd < workingLine.length && workingLine[digitsEnd] >= '0' && workingLine[digitsEnd] <= '9') {
+         digitsEnd++
+      }
+      const commandToken = workingLine.substring(1, digitsEnd)
+      const terminatorOk = digitsEnd === workingLine.length || workingLine[digitsEnd] === ' '
+      if (terminatorOk && (commandToken === '0' || commandToken === '00' || commandToken === '1' || commandToken === '01')) {
+         const fastResult = parseG0G1Fast(props, line)
+         if (fastResult) {
+            // Apply firstGCodeByte/lastGCodeByte logic
+            if (props.firstGCodeByte == 0 && fastResult.lineType == 'L') {
+               props.firstGCodeByte = fastResult.filePosition
+            }
+            if (fastResult.lineType == 'L') {
+               props.lastGCodeByte = fastResult.filePosition
+            }
+            return fastResult
          }
-         if (fastResult.lineType == 'L') {
-            props.lastGCodeByte = fastResult.filePosition
-         }
-         return fastResult
       }
    }
 

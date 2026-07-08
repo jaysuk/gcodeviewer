@@ -17,6 +17,26 @@ macro_rules! console_log {
     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
 }
 
+/// Splits on '\n' only, keeping any preceding '\r' as part of the returned line - matching the
+/// TypeScript parser's streamLines(). str::lines() strips both '\r' and '\n', which undercounts
+/// each CRLF line's consumed bytes by one, drifting file_position out of sync with the
+/// TypeScript-parsed gCodeLines used for picking/scrubbing on Windows-authored G-code.
+fn split_lines_keep_cr(content: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let bytes = content.as_bytes();
+    let mut start = 0usize;
+    for i in 0..bytes.len() {
+        if bytes[i] == b'\n' {
+            lines.push(&content[start..i]);
+            start = i + 1;
+        }
+    }
+    if start < content.len() {
+        lines.push(&content[start..]);
+    }
+    lines
+}
+
 /// High-performance file processor optimized for WASM
 pub struct FileProcessor {
     properties: ProcessorProperties,
@@ -50,7 +70,7 @@ impl FileProcessor {
         // Estimate processing parameters
         let file_length = file_content.len();
         let estimated_lines = file_length / 40; // Average ~40 chars per line
-        let chunk_size = 10000.min(estimated_lines / 10); // Process in chunks
+        let chunk_size = (10000.min(estimated_lines / 10)).max(1); // Process in chunks; must never be 0 or the modulo below panics on tiny files
         
         console_log!("Processing {} bytes, estimated {} lines in chunks of {}", 
                     file_length, estimated_lines, chunk_size);
@@ -66,7 +86,7 @@ impl FileProcessor {
         let mut last_progress_report = 0f64;
         
         // Process lines in chunks to avoid blocking
-        for line in file_content.lines() {
+        for line in split_lines_keep_cr(file_content) {
             // Update position tracking
             self.properties.file_position = file_position;
             self.properties.line_number = line_number;
@@ -141,11 +161,27 @@ impl FileProcessor {
                                 relative_move,
                                 workplace,
                             ) {
-                                // Build segments between points
+                                // Build segments between points. Every segment needs its own key in
+                                // position_tracker, but the map is keyed by file byte offset - the
+                                // previous "file_position + seg_index" scheme collided with (and
+                                // silently discarded) whichever later line's real file_position it
+                                // reached once a long arc produced more segments than the line was
+                                // bytes long. Distribute segments proportionally across this line's
+                                // own byte span instead, which can never reach the next line's
+                                // file_position (only two+ segments crammed into a very short arc
+                                // command can still collide with each other, which just costs a
+                                // skipped tessellation waypoint rather than corrupting another line).
                                 let mut seg_start = arc.start.clone();
-                                let mut seg_index = 0u32;
-                                for p in arc_result.intermediate_points {
-                                    let pos_key = file_position + seg_index; // keep ordering within line
+                                let total_segments = arc_result.intermediate_points.len() as u32;
+                                let safe_span = (line.len() as u32).max(1);
+                                for (idx, p) in arc_result.intermediate_points.into_iter().enumerate() {
+                                    let seg_index = idx as u32;
+                                    let offset = if total_segments <= 1 {
+                                        0
+                                    } else {
+                                        seg_index * (safe_span - 1) / (total_segments - 1)
+                                    };
+                                    let pos_key = file_position + offset;
                                     let pd = PositionData::new_with_color(
                                         seg_start.x, seg_start.y, seg_start.z,
                                         p.x, p.y, p.z,
@@ -163,7 +199,6 @@ impl FileProcessor {
                                     );
                                     position_tracker.insert(pos_key, pd);
                                     seg_start = p;
-                                    seg_index += 1;
                                 }
                             }
                         }
@@ -249,7 +284,7 @@ impl FileProcessor {
         let mut processed_bytes = 0usize;
         
         // Process in streaming chunks
-        for line_chunk in file_content.lines().collect::<Vec<_>>().chunks(chunk_size) {
+        for line_chunk in split_lines_keep_cr(file_content).chunks(chunk_size) {
             
             for line in line_chunk {
                 self.properties.file_position = file_position;
@@ -407,5 +442,37 @@ mod tests {
         let (gcode_lines, position_tracker) = result.unwrap();
         assert!(gcode_lines.len() >= 4); // At least the lines we specified
         assert!(!position_tracker.is_empty()); // Should have at least one extruding move
+    }
+
+    #[test]
+    fn test_split_lines_keep_cr_matches_byte_offsets() {
+        // Regression: str::lines() strips '\r', which previously undercounted each CRLF line's
+        // consumed bytes by one and drifted file_position out of sync on Windows-authored files
+        let crlf = "G28\r\nG1 X10 Y20\r\nG1 X15 Y25\r\n";
+        let lines = split_lines_keep_cr(crlf);
+        assert_eq!(lines, vec!["G28\r", "G1 X10 Y20\r", "G1 X15 Y25\r"]);
+
+        let mut offset = 0usize;
+        for line in &lines {
+            assert_eq!(&crlf[offset..offset + line.len()], *line);
+            offset += line.len() + 1; // +1 for the '\n' that split_lines_keep_cr consumed
+        }
+        assert_eq!(offset, crlf.len());
+    }
+
+    #[test]
+    fn test_process_file_content_crlf_positions() {
+        let mut processor = FileProcessor::new();
+        let crlf_gcode = "G28\r\nG1 X10 Y20 E1 F1500\r\nG1 X15 Y25 E2\r\n";
+
+        let result = processor.process_file_content(crlf_gcode, None);
+        assert!(result.is_ok());
+
+        let (_, position_tracker) = result.unwrap();
+        // Every recorded file_position must land exactly on the start of a real line
+        for &pos in position_tracker.keys() {
+            assert!((pos as usize) < crlf_gcode.len());
+            assert!(pos == 0 || crlf_gcode.as_bytes()[pos as usize - 1] == b'\n');
+        }
     }
 }

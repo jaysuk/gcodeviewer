@@ -32,7 +32,7 @@ function getCacheKey(header: string): string {
 }
 
 export function slicerFactory(gcode) {
-   if (gcode == null) return null
+   if (gcode == null) return new GenericBase()
 
    const header = gcode.substring(0, 10000)
    const cacheKey = getCacheKey(header)

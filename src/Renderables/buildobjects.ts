@@ -19,6 +19,7 @@ export default class BuildObjects {
    highlightMaterial: StandardMaterial = null
    cancelledMaterial: StandardMaterial = null
    cancelledHighlightMaterial: StandardMaterial = null
+   private xmarkTexture: DynamicTexture = null
    showCancelObjects = false
    showLabel = true
    alphaLevel = 0.5
@@ -52,13 +53,21 @@ export default class BuildObjects {
    }
 
    rebuildMaterials() {
+      // Called on every loadObjectBoundaries() (once per job/print update) - dispose the
+      // previous set first, or each call leaks 4 materials + a texture
+      this.baseMaterial?.dispose()
+      this.highlightMaterial?.dispose()
+      this.cancelledMaterial?.dispose()
+      this.cancelledHighlightMaterial?.dispose()
+      this.xmarkTexture?.dispose()
+
       this.baseMaterial = this.setBuildMaterial('BuildObjectBaseMaterial', new Color3(0.1, 0.5, 0.1), 0.25)
       this.highlightMaterial = this.setBuildMaterial('BuildObjectHighlightMaterial', new Color3(0.8, 0.8, 0.8))
       this.cancelledMaterial = this.setBuildMaterial('BuildObjectCancelledMaterial', new Color3(1, 0, 0), 0.4)
       this.cancelledHighlightMaterial = this.setBuildMaterial('BuildObjectCancelledHighlightMaterial', new Color3(1, 1, 0), 0.6)
-      const xmarkTexture = this.buildXMarkTexture()
-      this.cancelledMaterial.diffuseTexture = xmarkTexture
-      this.cancelledHighlightMaterial.diffuseTexture = xmarkTexture
+      this.xmarkTexture = this.buildXMarkTexture()
+      this.cancelledMaterial.diffuseTexture = this.xmarkTexture
+      this.cancelledHighlightMaterial.diffuseTexture = this.xmarkTexture
    }
 
    // Image decoding is unavailable in the render worker, so the cancelled-object X mark is drawn onto a DynamicTexture

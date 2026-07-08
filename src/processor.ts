@@ -25,8 +25,7 @@ export default class Processor {
    breakPoint = 100000
    gpuPicker: GPUPicker
    worker: Worker
-   //modelMaterial: ModelMaterial[]
-   modelMaterial: LineShaderMaterial[]
+   modelMaterial: LineShaderMaterial[] = []
    filePosition: number = 0
    maxIndex: number = 0
    focusedColorId = 0
@@ -34,6 +33,8 @@ export default class Processor {
    perimeterOnly = false
    originalFile: string //May or may not keep this. May force front end to reprovide or cache file.
    nozzle: Nozzle | null = null
+   // Last tool table provided via setTools(), re-applied after every loadFile() resets processorProperties
+   private userTools: { color: string; diameter?: number }[] | null = null
    // Track position data for nozzle animation since Move objects get replaced with Move_Thin
    positionTracker: Map<number, { x: number; y: number; z: number; feedRate: number; extruding: boolean }> = new Map()
    // Animation playback state
@@ -63,12 +64,23 @@ export default class Processor {
    } = { method: 'none', wasmEnabled: false }
 
    async enableWasmProcessing(): Promise<void> {
-      if (!this.wasmProcessor) {
-         this.wasmProcessor = new WasmProcessor()
-         await this.wasmProcessor.initialize()
-         this.processingStats.wasmEnabled = true
-         console.log('WASM processing enabled for G-code parsing')
+      if (this.wasmProcessor) {
+         return
       }
+      // Only assign this.wasmProcessor once initialize() actually succeeds - otherwise a failed
+      // init (e.g. the WASM module was never built) would permanently wedge the processor into
+      // treating WASM as "enabled" (see isWasmEnabled/loadFile) while every call still throws,
+      // and a retry would be impossible since the truthy field short-circuits future attempts.
+      const wasmProcessor = new WasmProcessor()
+      try {
+         await wasmProcessor.initialize()
+      } catch (error) {
+         wasmProcessor.dispose()
+         throw error
+      }
+      this.wasmProcessor = wasmProcessor
+      this.processingStats.wasmEnabled = true
+      console.log('WASM processing enabled for G-code parsing')
    }
 
    getProcessingMethod(): string {
@@ -85,8 +97,7 @@ export default class Processor {
 
    private async getWasmVersion(): Promise<string> {
       try {
-         const { get_version } = await import('../WASM_FileProcessor/pkg/gcode_file_processor')
-         return get_version()
+         return this.wasmProcessor?.getVersion() ?? 'unknown'
       } catch {
          return 'unknown'
       }
@@ -110,7 +121,19 @@ export default class Processor {
       if (!toolData || toolData.length === 0) {
          return
       }
-      this.processorProperties.tools = toolData.map((tool, idx) => {
+      // Remembered so it survives loadFile() recreating processorProperties (and its default
+      // tool table) on every file load - previously any setTools() call was silently discarded
+      // as soon as the next file was opened
+      this.userTools = toolData
+      this.applyUserTools()
+      this.modelMaterial.forEach((m) => m.updateToolColors(this.processorProperties.buildToolFloat32Array()))
+   }
+
+   private applyUserTools() {
+      if (!this.userTools) {
+         return
+      }
+      this.processorProperties.tools = this.userTools.map((tool, idx) => {
          const newTool = new Tool(idx, Color3.FromHexString(tool.color.substring(0, 7)).toColor4(1))
          if (tool.diameter) {
             newTool.diameter = tool.diameter
@@ -118,11 +141,12 @@ export default class Processor {
          return newTool
       })
       this.processorProperties.currentTool = this.processorProperties.tools[0]
-      this.modelMaterial.forEach((m) => m.updateToolColors(this.processorProperties.buildToolFloat32Array()))
    }
 
    cleanup() {
-      this.gpuPicker.clearRenderList()
+      this.gpuPicker?.clearRenderList()
+      this.focusedColorId = 0
+      this.filePosition = 0
       for (let idx = 0; idx < this.meshes.length; idx++) {
          this.scene.removeMesh(this.meshes[idx], true)
          this.meshes[idx].dispose(false, true)
@@ -142,6 +166,19 @@ export default class Processor {
    }
 
    async loadFile(file) {
+      try {
+         await this.loadFileInner(file)
+      } catch (error) {
+         // A failure partway through must never leave the UI's progress bar/file state stuck on
+         // a half-loaded model (see the gpuPicker-crashes-loadFile class of bug)
+         console.error('loadFile failed - resetting to an empty, consistent state', error)
+         this.worker.postMessage({ type: 'progress', progress: 1, label: 'Processing file' })
+         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0 })
+         throw error
+      }
+   }
+
+   private async loadFileInner(file) {
       this.originalFile = file
       this.cleanup()
       // Buffers from a previous WASM load must not leak into this one, otherwise a TS-parsed file would render the previous file's geometry
@@ -149,6 +186,7 @@ export default class Processor {
       this.gCodeLines = []
       this.processorProperties = new ProcessorProperties() //Reset for now
       this.processorProperties.slicer = slicerFactory(file)
+      this.applyUserTools()
 
       // Reset processing stats
       const startTime = performance.now()
@@ -205,9 +243,11 @@ export default class Processor {
 
       //This is driving picking
       this.gpuPicker.colorTestCallBack = (colorId) => {
+         // Unpicked background reads as (0,0,0) -> colorToNum 0 -> id -1; that's the "nothing
+         // hovered" sentinel, not a real line (colorId is 1-indexed against gCodeLines)
          const id = colorToNum(colorId) - 1
          this.focusedColorId = id
-         if (this.gCodeLines[id] && id > 0) {
+         if (id >= 0 && id < this.gCodeLines.length) {
             const o = this.gCodeLines[id]
 
             this.worker.postMessage({
@@ -222,6 +262,12 @@ export default class Processor {
 
       this.modelMaterial.forEach((m) => m.setMaxFeedRate(this.processorProperties.maxFeedRate))
       this.modelMaterial.forEach((m) => m.setMinFeedRate(this.processorProperties.minFeedRate))
+
+      // Empty/unparseable files leave gCodeLines empty - nothing below has a last line to reference
+      if (this.gCodeLines.length === 0) {
+         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0 })
+         return
+      }
 
       this.modelMaterial.forEach((m) =>
          m.updateCurrentFilePosition(this.gCodeLines[this.gCodeLines.length - 1].filePosition),
@@ -455,6 +501,7 @@ export default class Processor {
             // Reset processor state for TypeScript parsing phase
             this.processorProperties = new ProcessorProperties()
             this.processorProperties.slicer = slicerFactory(file)
+            this.applyUserTools()
 
             await this.loadFileStreamedWithPositions(file)
             const compatTime = performance.now() - compatStartTime
@@ -469,6 +516,7 @@ export default class Processor {
             // Reset processor state for TypeScript parsing phase
             this.processorProperties = new ProcessorProperties()
             this.processorProperties.slicer = slicerFactory(file)
+            this.applyUserTools()
 
             await this.loadFileStreamedWithPositions(file)
             this.processingStats.typescriptTime = performance.now() - tsStartTime
@@ -558,82 +606,19 @@ export default class Processor {
       return m
    }
 
-   async testRenderScene() {
-      const renderlines = []
-
-      let segmentCount = 0
-      let lastRenderedIdx = 0
-      let alphaIndex = 0
-
-      for (let idx = 0; idx < this.gCodeLines.length - 1; idx++) {
-         const gCodeline = this.gCodeLines[idx] as Move
-         if (this.perimeterOnly && !gCodeline.isPerimeter) {
-            this.gCodeLines[idx] = new Move_Thin(this.processorProperties, gCodeline as Move, null, idx)
-            continue
-         }
-         try {
-            if (gCodeline.lineType === 'L' && gCodeline.extruding) {
-               //Regular move
-               renderlines.push(gCodeline)
-               segmentCount++
-            } else if (gCodeline.lineType === 'A' && gCodeline.extruding) {
-               //Arc Move
-               renderlines.push(gCodeline)
-               segmentCount += (this.gCodeLines[idx] as ArcMove).segments.length
-            } else if (gCodeline.lineType === 'T') {
-               //Travel
-               renderlines.push(gCodeline)
-               segmentCount++
-            }
-         } catch (ex) {
-            console.log(this.gCodeLines[idx], ex)
-         }
-
-         if (segmentCount >= this.breakPoint) {
-            alphaIndex++
-            const sl = renderlines.slice(lastRenderedIdx)
-            const rl = this.testBuildMesh(sl, segmentCount, alphaIndex)
-            this.meshes.push(...rl)
-            this.gpuPicker.addToRenderList(rl[0]) //use the box mesh for all picking
-            lastRenderedIdx = renderlines.length
-            segmentCount = 0
-
-            this.worker.postMessage({
-               type: 'progress',
-               progress: idx / this.gCodeLines.length,
-               label: 'Generating model.',
-            })
-         }
-      }
-
-      if (segmentCount > 0) {
-         const sl = renderlines.slice(lastRenderedIdx)
-         const rl = this.testBuildMesh(sl, segmentCount, alphaIndex)
-         this.meshes.push(...rl)
-         this.gpuPicker.addToRenderList(rl[0]) //use the box mesh for all picking
-      }
-
-      this.worker.postMessage({
-         type: 'progress',
-         progress: 1,
-         label: 'Generating model.',
-      })
-
-      this.modelMaterial.forEach((m) => {
-         m.updateCurrentFilePosition(this.filePosition)
-         m.updateToolColors(this.processorProperties.buildToolFloat32Array())
-      })
-   }
-
    async testRenderSceneProgressive() {
       const renderlines = []
       let segmentCount = 0
       let lastRenderedIdx = 0
       let alphaIndex = 0
 
-      for (let idx = 0; idx < this.gCodeLines.length - 1; idx++) {
+      for (let idx = 0; idx < this.gCodeLines.length; idx++) {
          const gCodeline = this.gCodeLines[idx] as Move
-         if (this.perimeterOnly && !gCodeline.isPerimeter) {
+         // Only move/arc/travel lines carry a meaningful isPerimeter flag - comments and
+         // commands don't, so applying this filter to them would wrap every one of them in a
+         // Move_Thin (which expects Move/ArcMove-shaped data) for no reason
+         const isMoveLine = gCodeline.lineType === 'L' || gCodeline.lineType === 'A' || gCodeline.lineType === 'T'
+         if (isMoveLine && this.perimeterOnly && !gCodeline.isPerimeter) {
             this.gCodeLines[idx] = new Move_Thin(this.processorProperties, gCodeline as Move, null, idx)
             continue
          }
@@ -661,7 +646,6 @@ export default class Processor {
             const sl = renderlines.slice(lastRenderedIdx)
             const rl = this.testBuildMesh(sl, segmentCount, alphaIndex)
             this.meshes.push(...rl)
-            this.gpuPicker.addToRenderList(rl[0]) //use the box mesh for all picking
             lastRenderedIdx = renderlines.length
             segmentCount = 0
 
@@ -682,7 +666,6 @@ export default class Processor {
          const sl = renderlines.slice(lastRenderedIdx)
          const rl = this.testBuildMesh(sl, segmentCount, alphaIndex)
          this.meshes.push(...rl)
-         this.gpuPicker.addToRenderList(rl[0]) //use the box mesh for all picking
       }
 
       this.worker.postMessage({
@@ -704,10 +687,17 @@ export default class Processor {
       // this.scene.unfreezeActiveMeshes()
       mode = mode > 2 ? 0 : mode
       this.meshes.forEach((m) => m.setEnabled(false))
+      const activeMeshes: Mesh[] = []
       for (let idx = mode; idx < this.meshes.length; idx += 3) {
          this.meshes[idx].setEnabled(true)
+         activeMeshes.push(this.meshes[idx])
       }
       this.lastMeshMode = mode
+
+      // Picking always targets whichever mesh variant is currently visible (they all carry
+      // identical per-instance filePosition/pickColor/tool attributes), so it doesn't need its
+      // own always-enabled shadow copy of the box meshes
+      this.gpuPicker?.setActiveMeshes(activeMeshes)
 
       // Refresh material states to ensure correct lighting
       this.modelMaterial.forEach((m) => m.refreshMaterialState())
@@ -818,12 +808,18 @@ export default class Processor {
    }
 
    getFileSize() {
-      if (this.gCodeLines) {
+      if (this.gCodeLines && this.gCodeLines.length > 0) {
          return this.gCodeLines[this.gCodeLines.length - 1].filePosition
       }
+      return 0
    }
 
    getGCodeInRange(filePos, count = 20) {
+      if (this.gCodeLines.length === 0) {
+         this.worker.postMessage({ type: 'getgcodes', lines: [] })
+         return
+      }
+
       let idx = binarySearchClosest(this.gCodeLines, filePos, 'filePosition')
 
       if (this.gCodeLines[idx].filePosition > filePos) idx--
@@ -880,17 +876,11 @@ export default class Processor {
    private updateNozzlePositionInstant(filePosition: number) {
       if (!this.nozzle || this.positionTracker.size === 0) return
 
-      // Find the closest position in our tracker
-      let closestPosition = null
-      let minDistance = Infinity
-
-      for (const [pos, posData] of this.positionTracker) {
-         const distance = Math.abs(pos - filePosition)
-         if (distance < minDistance) {
-            minDistance = distance
-            closestPosition = posData
-         }
-      }
+      // Binary search via the already-sorted positions instead of scanning every tracked
+      // position - matters on multi-million-line files where scrubbing the timeline was
+      // otherwise an O(n) scan per position update
+      const idx = this.findClosestPositionIndex(filePosition)
+      const closestPosition = this.positionTracker.get(this.sortedPositions[idx])
 
       if (closestPosition) {
          this.nozzle.setPosition({
@@ -904,17 +894,8 @@ export default class Processor {
    private updateNozzlePositionAnimated(filePosition: number) {
       if (!this.nozzle || this.positionTracker.size === 0) return
 
-      // Find the closest position in our tracker
-      let closestPosition = null
-      let minDistance = Infinity
-
-      for (const [pos, posData] of this.positionTracker) {
-         const distance = Math.abs(pos - filePosition)
-         if (distance < minDistance) {
-            minDistance = distance
-            closestPosition = posData
-         }
-      }
+      const idx = this.findClosestPositionIndex(filePosition)
+      const closestPosition = this.positionTracker.get(this.sortedPositions[idx])
 
       if (closestPosition) {
          // Create a fake Move object for the nozzle animation
@@ -962,7 +943,8 @@ export default class Processor {
       const meshes = this.createMeshesFromWasmBuffers(wasmBuffers)
 
       this.meshes.push(...meshes)
-      this.gpuPicker.addToRenderList(meshes[0]) // Use the first mesh for picking
+      // Picking's active mesh set is (re)established by the setMeshMode(this.lastMeshMode) call
+      // at the end of loadFile, once every mesh chunk (TS or WASM) has been created
 
       // Update materials
       this.modelMaterial.forEach((m) => {
@@ -1026,31 +1008,31 @@ export default class Processor {
    }
 
    private applyWasmBuffersToMesh(mesh: Mesh, wasmBuffers: any) {
-      // Apply WASM-generated buffer data directly to mesh
-      const segmentCount = wasmBuffers.segmentCount
+      // Apply WASM-generated buffer data directly to mesh. Mirrors testBuildMesh's copyBuffers()
+      // exactly (static buffers + refreshed bounding info) - without this the mesh keeps the unit
+      // bounding box from its base geometry and gets frustum-culled away at most camera angles
+      // despite the thin instances rendering far outside it.
+      mesh.thinInstanceSetBuffer('matrix', wasmBuffers.matrixData, 16, true)
+      mesh.doNotSyncBoundingInfo = true
+      mesh.thinInstanceRefreshBoundingInfo(false)
 
-      // Set the matrix data (transformations)
-      mesh.thinInstanceSetBuffer('matrix', wasmBuffers.matrixData, 16, false)
+      mesh.thinInstanceSetBuffer('baseColor', wasmBuffers.colorData, 4, true)
+      mesh.thinInstanceSetBuffer('pickColor', wasmBuffers.pickData, 3, true)
+      mesh.thinInstanceSetBuffer('filePosition', wasmBuffers.filePositionData, 1, true)
+      mesh.thinInstanceSetBuffer('filePositionEnd', wasmBuffers.fileEndPositionData, 1, true)
+      mesh.thinInstanceSetBuffer('tool', wasmBuffers.toolData, 1, true)
+      mesh.thinInstanceSetBuffer('feedRate', wasmBuffers.feedRateData, 1, true)
+      mesh.thinInstanceSetBuffer('isPerimeter', wasmBuffers.isPerimeterData, 1, true)
+      mesh.isPickable = false
 
-      // Set color data (match attribute name used elsewhere)
-      mesh.thinInstanceSetBuffer('baseColor', wasmBuffers.colorData, 4, false)
-
-      // Set other buffer data (use consistent attribute names and component sizes)
-      mesh.thinInstanceSetBuffer('pickColor', wasmBuffers.pickData, 3, false)
-      mesh.thinInstanceSetBuffer('filePosition', wasmBuffers.filePositionData, 1, false)
-      mesh.thinInstanceSetBuffer('filePositionEnd', wasmBuffers.fileEndPositionData, 1, false)
-      mesh.thinInstanceSetBuffer('tool', wasmBuffers.toolData, 1, false)
-      mesh.thinInstanceSetBuffer('feedRate', wasmBuffers.feedRateData, 1, false)
-      mesh.thinInstanceSetBuffer('isPerimeter', wasmBuffers.isPerimeterData, 1, false)
-
-      mesh.thinInstanceCount = segmentCount
-
-      console.log(`📊 Applied WASM buffers to ${mesh.name}: ${segmentCount} instances`)
+      console.log(`📊 Applied WASM buffers to ${mesh.name}: ${wasmBuffers.segmentCount} instances`)
    }
 
    async setPerimeterOnly(perimeterOnly) {
       this.perimeterOnly = perimeterOnly
-      await this.loadFile(this.originalFile)
+      if (this.originalFile) {
+         await this.loadFile(this.originalFile)
+      }
    }
 
    showSupports(show) {

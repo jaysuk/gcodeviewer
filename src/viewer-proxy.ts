@@ -1,4 +1,5 @@
 import ViewerWorker from './viewer.worker?worker&inline'
+import ViewerApi from './viewer-api'
 
 const mouseEventFields = [
    'altKey',
@@ -65,9 +66,21 @@ const keyboardEventFields = [
    'which',
 ]
 
-export default class ViewerProxy {
+export default class ViewerProxy implements ViewerApi {
    private webWorker: Worker
    mainCanvas: HTMLCanvasElement | null = null
+
+   // Every DOM listener this proxy registers on behalf of the worker (window/document/canvas),
+   // so unload() can remove them all instead of leaving them attached (and calling
+   // preventDefault/stopPropagation, and posting to a terminated worker) forever
+   private registeredListeners: { target: EventTarget; eventName: string; fn: EventListener; opt: any }[] = []
+   private onWindowResize = () => {
+      this.webWorker.postMessage({
+         type: 'resize',
+         width: this.mainCanvas?.clientWidth,
+         height: this.mainCanvas?.clientHeight,
+      })
+   }
 
    constructor(canvas: HTMLCanvasElement) {
       this.mainCanvas = canvas
@@ -91,13 +104,9 @@ export default class ViewerProxy {
       )
 
       //Handle window resize events without user having to implement
-      window.onresize = () => {
-         this.webWorker.postMessage({
-            type: 'resize',
-            width: this.mainCanvas?.clientWidth,
-            height: this.mainCanvas?.clientHeight,
-         })
-      }
+      // addEventListener (not window.onresize=) so this doesn't clobber the host page's own
+      // resize handler or a second ViewerProxy instance's handler
+      window.addEventListener('resize', this.onWindowResize)
    }
 
    //Messages from the worker
@@ -127,29 +136,27 @@ export default class ViewerProxy {
 
                //console.log('Registering event ' + e.data.eventName + ' on ' + e.data.targetName)
 
-               target.addEventListener(
-                  e.data.eventName,
-                  (evt) => {
-                     // We can`t pass original event to the worker
-                     let eventClone = {}
-                     try {
-                        eventClone = this.cloneEvent(evt)
-                     } catch (e) {
-                        console.log('Error cloning event', e)
-                     }
-                     evt.stopPropagation()
-                     evt.preventDefault()
+               const listener = (evt) => {
+                  // We can`t pass original event to the worker
+                  let eventClone = {}
+                  try {
+                     eventClone = this.cloneEvent(evt)
+                  } catch (e) {
+                     console.log('Error cloning event', e)
+                  }
+                  evt.stopPropagation()
+                  evt.preventDefault()
 
-                     this.webWorker.postMessage({
-                        type: 'event',
-                        targetName: e.data.targetName,
-                        eventName: e.data.eventName,
-                        eventClone: eventClone,
-                     })
-                     return false
-                  },
-                  e.data.opt,
-               )
+                  this.webWorker.postMessage({
+                     type: 'event',
+                     targetName: e.data.targetName,
+                     eventName: e.data.eventName,
+                     eventClone: eventClone,
+                  })
+                  return false
+               }
+               target.addEventListener(e.data.eventName, listener, e.data.opt)
+               this.registeredListeners.push({ target, eventName: e.data.eventName, fn: listener, opt: e.data.opt })
             }
             break
          case 'canvasMethod': //Calls from the canvas to preform functions such as focus
@@ -158,6 +165,7 @@ export default class ViewerProxy {
             }
             break
          case 'unloadComplete':
+            this.removeAllListeners()
             this.webWorker.terminate()
             break
          //case 'currentline':
@@ -178,11 +186,15 @@ export default class ViewerProxy {
       console.log(e)
    }
 
-   init(): void {}
-
-   cancel(): void {
-      this.webWorker.postMessage({ type: 'cancel', params: [] })
+   private removeAllListeners(): void {
+      window.removeEventListener('resize', this.onWindowResize)
+      for (const { target, eventName, fn, opt } of this.registeredListeners) {
+         target.removeEventListener(eventName, fn, opt)
+      }
+      this.registeredListeners = []
    }
+
+   init(): void {}
 
    loadFile(file): void {
       this.webWorker.postMessage({ type: 'loadFile', file: file })
@@ -190,14 +202,6 @@ export default class ViewerProxy {
 
    unload(): void {
       this.webWorker.postMessage({ type: 'unload', params: [] })
-   }
-
-   reset(): void {
-      this.webWorker.postMessage({ type: 'reset', params: [] })
-   }
-
-   updateColorTest(): void {
-      this.webWorker.postMessage({ type: 'updatecolortest', params: [] })
    }
 
    updateFilePosition(filePosition: number, animate: boolean = false): void {
@@ -258,6 +262,10 @@ export default class ViewerProxy {
 
    showViewBox(visible: boolean): void {
       this.webWorker.postMessage({ type: 'showViewBox', visible: visible })
+   }
+
+   setPickingEnabled(enabled: boolean): void {
+      this.webWorker.postMessage({ type: 'setPickingEnabled', enabled: enabled })
    }
 
    setCameraDirection(direction: { x: number; y: number; z: number }): void {
@@ -357,7 +365,10 @@ export default class ViewerProxy {
 
    //Used to clone the event properties out of an object so they can be sent to worker
    cloneEvent(event) {
-      const cloneFieldList = event.constructor.name === 'KeyboardEvent' ? keyboardEventFields : mouseEventFields
+      // instanceof rather than constructor.name - class names get mangled by consumers' own
+      // production minification, which would silently misclassify every keyboard event as a
+      // mouse event (wrong field list) once this library is bundled into a minified app
+      const cloneFieldList = event instanceof KeyboardEvent ? keyboardEventFields : mouseEventFields
       const cloneFields = {}
       for (const field of cloneFieldList) {
          cloneFields[field] = event[field]

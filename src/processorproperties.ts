@@ -1,5 +1,5 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import Tool, { tools } from './tools'
+import Tool, { createDefaultTools } from './tools'
 import { Color4 } from '@babylonjs/core/Maths/math.color'
 import SlicerBase from './GCodeParsers/slicerbase'
 import GenericBase from './GCodeParsers/genericbase'
@@ -43,7 +43,7 @@ export default class ProcessorProperties {
    hasMixing: boolean = false
    currentWorkplaceIdx: number = 0
    workplaceOffsets: Vector3[] = []
-   absolute: boolean = false
+   absolute: boolean = true // G-code spec default (matches WASM's absolute_positioning default) - files that never issue G90 still parse correctly
    firmwareRetraction: boolean = false
    units = Units.millimeters
    totalRenderedSegments: number = 0
@@ -75,11 +75,14 @@ export default class ProcessorProperties {
    }
 
    set CurrentFeedRate(value: number) {
-      if (this.currentFeedRate > this.maxFeedRate) {
-         this.maxFeedRate = this.currentFeedRate
+      // Fold the incoming value into min/max, not the value being replaced - otherwise the last
+      // feed rate ever set is never accounted for, and the first real value is compared against
+      // the initial default of 1 instead of being the new baseline
+      if (value > this.maxFeedRate) {
+         this.maxFeedRate = value
       }
-      if (this.currentFeedRate != 0 && this.currentFeedRate < this.minFeedRate) {
-         this.minFeedRate = this.currentFeedRate
+      if (value != 0 && value < this.minFeedRate) {
+         this.minFeedRate = value
       }
 
       this.currentFeedRate = value
@@ -99,7 +102,7 @@ export default class ProcessorProperties {
 
    constructor() {
       this.workplaceOffsets.push(new Vector3(0, 0, 0)) //set a default workplace if we do not have workplaces
-      this.tools = tools // set the tools to the default tools
+      this.tools = createDefaultTools() // fresh array per instance - never shared/mutated across instances
       this.currentTool = this.tools[0]
    }
 }

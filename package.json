@@ -17,6 +17,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "precheck": "node WASM_FileProcessor/ensure-pkg.mjs",
     "check": "tsc --noEmit",
     "build:wasm": "cd WASM_FileProcessor && wasm-pack build --target web --out-dir pkg --release",
     "build:wasm:node": "cd WASM_FileProcessor && wasm-pack build --target nodejs --out-dir pkg-node --release"

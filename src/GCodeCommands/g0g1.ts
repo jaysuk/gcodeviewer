@@ -25,7 +25,9 @@ export default function (props: Props, line: string): Base {
             if (upperToken == 'G53') forceAbsolute = true
             if (upperToken == 'G1' || upperToken == 'G01') {
                //move.extruding = true
-               props.currentTool.color.toArray(move.color)
+               // move.color already comes from the slicer feature (set in Move's constructor) -
+               // matches the WASM parser, which also uses feature color rather than tool color
+               // for render mode 0. Tool color has its own render mode (1).
                move.extruding = props.cncMode
             }
             break

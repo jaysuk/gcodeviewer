@@ -128,7 +128,7 @@ export default class Bed {
          }, this.scene)
          this.bedMesh.position.x = bedCenter.x
          this.bedMesh.position.y = bedCenter.z
-         this.bedMesh.position.z = bedCenter.x
+         this.bedMesh.position.z = bedCenter.y
          this.bedMesh.isPickable = false
          this.bedMesh.enableEdgesRendering(undefined, true)
 
@@ -155,9 +155,12 @@ export default class Bed {
             depth: bedSize.y,
             height: bedSize.z
          }, this.scene)
-         this.bedMesh.position.x = bedCenter.x - this.buildVolume.x.min
-         this.bedMesh.position.y = bedCenter.z - this.buildVolume.z.min
-         this.bedMesh.position.z = bedCenter.y - this.buildVolume.y.min
+         // CreateBox is centered at its local origin (matches CreatePlane in buildFlatBed, which
+         // positions at bedCenter directly) - the extra "- min" here shifted the box off-center
+         // for any printer whose build volume doesn't start at 0 (e.g. center-origin CoreXY)
+         this.bedMesh.position.x = bedCenter.x
+         this.bedMesh.position.y = bedCenter.z
+         this.bedMesh.position.z = bedCenter.y
          this.bedMesh.enableEdgesRendering()
          this.bedMesh.edgesWidth = 100
          this.bedMesh.material = this.boxMaterial
@@ -207,9 +210,13 @@ export default class Bed {
       return Color4.FromHexString(this.getBedColor().padEnd(9, 'F'))
    }
 
+   // Called routinely (setRenderMode/commitBedSize/setDelta) to tear down the current mesh before
+   // rebuilding it - must never dispose planeMaterial/boxMaterial (shared, reused by buildBed()),
+   // or the next build assigns an already-disposed material and renders broken/invisible. The
+   // scene's own disposal (Viewer.unload -> engine.dispose()) reaps these materials at final teardown.
    dispose(): void {
       if (this.bedMesh) {
-         this.bedMesh.dispose(false, true)
+         this.bedMesh.dispose(false, false)
          this.bedMesh = null
       }
       if (this.highlightLayer) {

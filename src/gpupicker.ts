@@ -15,19 +15,25 @@ export default class GPUPicker {
    colorTestCallBack: any
    currentPosition: number = 0
    renderTargetMeshs: Mesh[] = []
+   enabled: boolean = true
 
-   //  shaderMaterial: CustomMaterial
    shaderMaterial: ShaderMaterial
+
+   // A single reused framebuffer for the pick readback - the previous implementation created and
+   // never deleted a new one every frame (an unbounded GPU object leak)
+   private frameBuffer: WebGLFramebuffer | null = null
+   private readonly pixelBuffer = new Uint8Array(4)
+
    constructor(scene: Scene, engine: Engine, width: number, height: number) {
       this.scene = scene
       this.engine = engine
       this.width = width
       this.height = height
-      this.renderTarget = new RenderTargetTexture('rt', { width, height }, this.scene, true)
+      // generateMipMaps=false: this texture is only ever point-sampled for picking, never minified
+      this.renderTarget = new RenderTargetTexture('rt', { width, height }, this.scene, false)
       this.renderTarget.clearColor = new Color4(0, 0, 0, 0)
       this.renderTarget.refreshRate = 1
       this.scene.customRenderTargets.push(this.renderTarget)
-      console.log(this.scene.customRenderTargets)
       this.shaderMaterial = new ShaderMaterial(
          'pick_mat',
          this.scene,
@@ -49,48 +55,48 @@ export default class GPUPicker {
          },
       )
 
-      let isEnabled = false
-      this.renderTarget.onBeforeRenderObservable.add(() => {
-         if (this.renderTargetMeshs) {
-            isEnabled = this.renderTargetMeshs[0]?.isEnabled() ?? false
-            this.renderTargetMeshs.forEach((m) => m.setEnabled(true))
-         } else {
-            //console.log('no target')
-         }
-      })
       this.renderTarget.onAfterRenderObservable.add(() => {
-         const x = Math.round(this.scene.pointerX)
-         const y = this.height - Math.round(this.scene.pointerY)
-
-         const pixels = this.readTexturePixels(
-            this.engine._gl,
-            this.renderTarget._texture._hardwareTexture.underlyingResource,
-            x,
-            y,
-            1,
-            1,
-         )
-
-         if (this.colorTestCallBack) {
-            this.colorTestCallBack(pixels)
+         if (!this.enabled) {
+            return
          }
-         if (this.renderTargetMeshs) {
-            if (!isEnabled) this.renderTargetMeshs.forEach((m) => m.setEnabled(false))
-         } else {
-            //console.log('no target')
+         try {
+            const x = Math.round(this.scene.pointerX)
+            const y = this.height - Math.round(this.scene.pointerY)
+
+            const pixels = this.readTexturePixels(x, y, 1, 1)
+            if (pixels && this.colorTestCallBack) {
+               this.colorTestCallBack(pixels)
+            }
+         } catch (error) {
+            // A picking failure must never take down the main render loop
+            console.error('GPUPicker: failed to read pick texture', error)
          }
       })
    }
 
-   readTexturePixels(gl, texture, x, y, w, h) {
-      const frameBuffer = gl.createFramebuffer()
-      const pixels = new Uint8Array(w * h * 4)
+   readTexturePixels(x, y, w, h): Uint8Array | null {
+      // The underlying WebGL texture is transiently unavailable during resize/rebuild
+      const hardwareTexture = this.renderTarget._texture?._hardwareTexture
+      const underlyingResource = hardwareTexture?.underlyingResource
+      if (!underlyingResource) {
+         return null
+      }
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuffer)
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0)
-      gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+      const gl = this.engine._gl
+      if (!this.frameBuffer) {
+         this.frameBuffer = gl.createFramebuffer()
+      }
 
-      return pixels
+      // Babylon manages its own framebuffer binding cache - save and restore it so this read
+      // doesn't leave GL state that the next Babylon draw call doesn't expect
+      const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING)
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.frameBuffer)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, underlyingResource, 0)
+      gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this.pixelBuffer)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer)
+
+      return this.pixelBuffer
    }
 
    updateRenderTargetSize(width, height) {
@@ -99,26 +105,65 @@ export default class GPUPicker {
       this.renderTarget.resize({ width, height })
    }
 
-   clearRenderList() {
-      this.renderTarget.renderList = []
-      this.renderTargetMeshs = []
+   // Enable/disable picking without tearing down the shader material, so re-enabling is cheap.
+   // Disabling removes the render target from the scene's custom render targets entirely, rather
+   // than leaving it (and every gpuPicker call site) to fail once some other part of the pipeline
+   // assumes picking is unavailable.
+   setEnabled(enabled: boolean) {
+      if (this.enabled === enabled) {
+         return
+      }
+      this.enabled = enabled
+      if (enabled) {
+         if (!this.scene.customRenderTargets.includes(this.renderTarget)) {
+            this.scene.customRenderTargets.push(this.renderTarget)
+         }
+         this.renderTarget.renderList = [...this.renderTargetMeshs]
+      } else {
+         const idx = this.scene.customRenderTargets.indexOf(this.renderTarget)
+         if (idx !== -1) {
+            this.scene.customRenderTargets.splice(idx, 1)
+         }
+         this.renderTarget.renderList = []
+      }
    }
 
-   addToRenderList(mesh: Mesh) {
-      this.renderTargetMeshs.push(mesh)
-      this.renderTarget.setMaterialForRendering(this.renderTargetMeshs, this.shaderMaterial)
-      this.renderTarget.renderList.push(mesh)
+   clearRenderList() {
+      this.renderTargetMeshs = []
+      this.renderTarget.renderList = []
+   }
+
+   // Registers the mesh set that should back picking right now (e.g. whichever mesh-mode variant
+   // is currently visible). Replaces whatever was previously registered.
+   setActiveMeshes(meshes: Mesh[]) {
+      this.renderTargetMeshs = meshes
+      if (meshes.length > 0) {
+         this.renderTarget.setMaterialForRendering(meshes, this.shaderMaterial)
+      }
+      if (this.enabled) {
+         this.renderTarget.renderList = [...meshes]
+      }
    }
 
    updateCurrentPosition(currentPosition: number) {
       this.currentPosition = currentPosition
       this.shaderMaterial.setFloat('currentPosition', this.currentPosition)
    }
+
+   dispose() {
+      this.setEnabled(false)
+      if (this.frameBuffer) {
+         this.engine._gl.deleteFramebuffer(this.frameBuffer)
+         this.frameBuffer = null
+      }
+      this.renderTarget.dispose()
+      this.shaderMaterial.dispose()
+   }
 }
 
 const vertexShader = `
 // Vertex shader
-#if defined(WEBGL2) || defines(WEBGPU)
+#if defined(WEBGL2) || defined(WEBGPU)
 precision highp sampler2DArray;
 #endif
 precision highp float;
@@ -159,7 +204,7 @@ const fragmentShader = `
 layout(location = 0) out highp vec4 glFragData[SCENE_MRT_COUNT];
 highp vec4 gl_FragColor;
 #endif
-#if defined(WEBGL2) || defines(WEBGPU)
+#if defined(WEBGL2) || defined(WEBGPU)
 precision highp sampler2DArray;
 #endif
 precision highp float;

@@ -183,33 +183,36 @@ pub fn parse_g0_g1_move(
 }
 
 /// Fast detection of G0/G1 commands
-/// Returns true if the line starts with G0 or G1
+/// Returns true only for an exact G0/G1/G00/G01 command token (not G10, G11, G28, ...)
 pub fn is_g0_g1_command(line: &str) -> bool {
-    let bytes = line.trim().as_bytes();
-    
+    let trimmed = line.trim();
+    let bytes = trimmed.as_bytes();
+
     if bytes.len() < 2 {
         return false;
     }
-    
+
     // Must start with G or g
     if bytes[0] != b'G' && bytes[0] != b'g' {
         return false;
     }
-    
-    // Check for G0, G1, G00, G01
-    match bytes[1] {
-        b'0' => {
-            // G0 or G00
-            bytes.len() == 2 || bytes[2] == b' ' || 
-            (bytes.len() > 2 && bytes[2] == b'0' && (bytes.len() == 3 || bytes[3] == b' '))
-        }
-        b'1' => {
-            // G1 or G01  
-            bytes.len() == 2 || bytes[2] == b' ' ||
-            (bytes.len() > 2 && bytes[2] == b'0' && (bytes.len() == 3 || bytes[3] == b' '))
-        }
-        _ => false,
+
+    // Scan the full digit run after 'G' so "G10 ..." isn't mistaken for "G1" followed by "0 ..."
+    let mut i = 1;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
     }
+
+    if i == 1 {
+        return false; // no digits after G
+    }
+
+    let terminator_ok = i == bytes.len() || bytes[i] == b' ';
+    if !terminator_ok {
+        return false;
+    }
+
+    matches!(&trimmed[1..i], "0" | "00" | "1" | "01")
 }
 
 /// Extract G-code command number from line
@@ -259,6 +262,13 @@ mod tests {
         assert!(!is_g0_g1_command("M104 S200"));
         assert!(!is_g0_g1_command("; comment"));
         assert!(!is_g0_g1_command(""));
+
+        // Must not match commands that merely start with the same digits (regression: G10 was
+        // previously misdetected as G1 followed by "0 ...")
+        assert!(!is_g0_g1_command("G10 P1 X0 Y0"));
+        assert!(!is_g0_g1_command("G11"));
+        assert!(!is_g0_g1_command("G28"));
+        assert!(!is_g0_g1_command("G02 X10 Y20"));
     }
     
     #[test]

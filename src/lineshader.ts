@@ -223,7 +223,6 @@ export default class LineShaderMaterial {
                'tool',
                'feedRate',
                'isPerimeter',
-               'baseColor',
             ],
             uniforms: [
                'world',

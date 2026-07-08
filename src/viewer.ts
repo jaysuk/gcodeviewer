@@ -246,13 +246,12 @@ export default class Viewer {
                this.setCameraDirection(direction)
                return
             }
-            try {
-               if (this.processor.focusedColorId > 10) {
-                  const pos = this.processor.gCodeLines[this.processor.focusedColorId].filePosition
-                  this.processor.updateFilePosition(pos)
-                  this.worker.postMessage({ type: 'positionupdate', position: pos })
-               }
-            } catch {}
+            const id = this.processor.focusedColorId
+            if (id >= 0 && id < this.processor.gCodeLines.length) {
+               const pos = this.processor.gCodeLines[id].filePosition
+               this.processor.updateFilePosition(pos)
+               this.worker.postMessage({ type: 'positionupdate', position: pos })
+            }
          }
       })
 
@@ -319,6 +318,14 @@ export default class Viewer {
 
    showViewBox(visible: boolean) {
       this.viewBox?.show(visible)
+   }
+
+   // Toggling this off simply stops the picker's render target from rendering/reading back -
+   // the GPUPicker instance itself, its shader material, and the processor's mesh pipeline are
+   // never torn down, so this can be flipped on/off at any time without affecting the rest of
+   // the render pipeline
+   setPickingEnabled(enabled: boolean) {
+      this.processor.gpuPicker.setEnabled(enabled)
    }
 
    setBackgroundColor(hexColor: string) {
@@ -427,7 +434,6 @@ export default class Viewer {
    }
 
    setMaxFPS(fps) {
-      console.log(fps)
       if (fps <= 0) fps = 1
       this.maxFrameRate = 1000 / fps
    }
@@ -456,6 +462,9 @@ export default class Viewer {
    noop() {}
 
    unload() {
+      // Otherwise the pending nozzle-animation setTimeout fires after teardown, touching a
+      // disposed scene/meshes and keeping this Viewer/Processor alive in memory via its closure
+      this.processor.stopNozzleAnimation()
       this.engine.dispose()
       this.scene = null
       this.engine = null

@@ -10,11 +10,22 @@ const tokenList = /(?=[GXYZIJKFRE])/
 export default function (props: Props, line: string): Base {
    const move = new ArcMove(props, line)
 
+   // Strip any inline comment before tokenizing - otherwise a comment word starting with one of
+   // the token letters (e.g. "; Edge case") corrupts tokenization and would be mistaken for a
+   // parameter, including a false extrusion match on a stray 'E'
+   const commentIdx = line.indexOf(';')
+   const codeLine = commentIdx >= 0 ? line.substring(0, commentIdx) : line
+
+   const tokens = codeLine.split(tokenList)
+
+   const eToken = tokens.find((t) => t[0] === 'E' || t[0] === 'e')
+   move.extruding = (eToken !== undefined && Number(eToken.substring(1)) > 0) || props.cncMode //|| this.g1AsExtrusion //Treat as an extrusion in cnc mode
+
+   const fToken = tokens.find((t) => t[0] === 'F' || t[0] === 'f')
+   if (fToken !== undefined && move.extruding) {
+      props.CurrentFeedRate = Number(fToken.substring(1))
+   }
    move.feedRate = props.CurrentFeedRate
-
-   const tokens = line.split(tokenList)
-
-   move.extruding = line.indexOf('E') > 0 || props.cncMode //|| this.g1AsExtrusion //Treat as an extrusion in cnc mode
 
    // let cw = tokens.filter((t) => t === 'G2' || t === 'G02')
 
