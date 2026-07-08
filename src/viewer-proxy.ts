@@ -75,6 +75,14 @@ export default class ViewerProxy implements ViewerApi {
    // preventDefault/stopPropagation, and posting to a terminated worker) forever
    private registeredListeners: { target: EventTarget; eventName: string; fn: EventListener; opt: any }[] = []
    private onWindowResize = () => {
+      this.resize()
+   }
+
+   // Re-reads the canvas's current size and pushes it to the worker. The window-resize listener
+   // below covers actual window resizes automatically, but a host layout change that doesn't fire
+   // a window resize event (a panel toggling, going fullscreen, a CSS breakpoint) needs this
+   // called explicitly.
+   resize(): void {
       this.webWorker.postMessage({
          type: 'resize',
          width: this.mainCanvas?.clientWidth,

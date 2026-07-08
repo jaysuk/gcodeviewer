@@ -9,6 +9,7 @@ export default interface ViewerApi {
    reload(): Promise<{ start: number; end: number; failed: boolean }>
    clear(): Promise<void>
    unload(): void
+   resize(): void
    updateFilePosition(filePosition: number, animate?: boolean): void
    getGCodes(position: number, count: number): void
    goToLineNumber(lineNumber: number): void

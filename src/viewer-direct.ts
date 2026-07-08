@@ -7,6 +7,11 @@ export default class ViewerDirect implements ViewerApi {
    passThru: any = null
 
    private onWindowResize = () => {
+      this.resize()
+   }
+
+   // See ViewerProxy.resize() - covers layout changes that don't fire a window resize event
+   resize(): void {
       this.viewer.setSizes(this.mainCanvas?.clientWidth, this.mainCanvas?.clientHeight)
    }
 
