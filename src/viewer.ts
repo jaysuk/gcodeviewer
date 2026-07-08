@@ -299,6 +299,167 @@ export default class Viewer {
       this.scene?.render(true)
    }
 
+   // Frames the camera on the loaded print's bounding box (when embedded, e.g. the Job Status
+   // tab) or the bed footprint otherwise. Call after a file load and whenever the view should
+   // reset to "show me everything". Ported from the consumer side (DWC) rather than developed
+   // fresh here, since the math is coordinate-system-agnostic and needs the real camera/engine,
+   // which only exist in this worker - a consumer can no longer reach `scene.activeCamera` itself.
+   frameToContent(isEmbedded: boolean) {
+      if (!this.orbitCamera || !this.bed) {
+         return
+      }
+      const bounds = isEmbedded ? this.processor.getPrintBounds() : null
+      if (bounds) {
+         const target = new Vector3(
+            (bounds.min.x + bounds.max.x) / 2,
+            (bounds.min.y + bounds.max.y) / 2,
+            (bounds.min.z + bounds.max.z) / 2,
+         )
+         this.orbitCamera.setTarget(target)
+      } else {
+         const center = this.bed.getCenter()
+         this.orbitCamera.setTarget(new Vector3(center.x, -2, center.y))
+      }
+      this.orbitCamera.alpha = -Math.PI / 2
+      this.orbitCamera.beta = Math.PI / 4
+      this.frameToViewport(this.framingCorners(bounds))
+      this.scene?.render(true)
+   }
+
+   // Corners fed to the framing fit: the eight corners of the print bounding box, or - with
+   // nothing loaded - the four bed-footprint corners on the bed plane. All in Babylon space (y is
+   // height)
+   private framingCorners(
+      bounds: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } } | null,
+   ): Array<[number, number, number]> {
+      if (bounds) {
+         const lo = bounds.min
+         const hi = bounds.max
+         return [
+            [lo.x, lo.y, lo.z], [hi.x, lo.y, lo.z], [lo.x, lo.y, hi.z], [hi.x, lo.y, hi.z],
+            [lo.x, hi.y, lo.z], [hi.x, hi.y, lo.z], [lo.x, hi.y, hi.z], [hi.x, hi.y, hi.z],
+         ]
+      }
+      const center = this.bed.getCenter()
+      const size = this.bed.getSize()
+      const hx = size.x / 2
+      const hy = size.y / 2
+      return [
+         [center.x - hx, -2, center.y - hy], [center.x + hx, -2, center.y - hy],
+         [center.x - hx, -2, center.y + hy], [center.x + hx, -2, center.y + hy],
+      ]
+   }
+
+   // Pull the orbit camera back until the supplied bounding-box corners fill the viewport. Each
+   // corner is projected with the live view + projection matrices and the radius is rescaled from
+   // how much of the clip volume they span, so the fit adapts to the box size, the camera tilt
+   // and the viewport aspect ratio. A strip is reserved at the bottom so a host's playback
+   // controls overlay stays clear. Perspective makes a single pass approximate, hence the short
+   // converging loops.
+   private frameToViewport(corners: Array<[number, number, number]>) {
+      const camera = this.orbitCamera
+      if (!camera || corners.length === 0 || !this.engine) {
+         return
+      }
+
+      let spanMinX = Infinity, spanMaxX = -Infinity
+      let spanMinY = Infinity, spanMaxY = -Infinity
+      let spanMinZ = Infinity, spanMaxZ = -Infinity
+      for (const [x, y, z] of corners) {
+         spanMinX = Math.min(spanMinX, x); spanMaxX = Math.max(spanMaxX, x)
+         spanMinY = Math.min(spanMinY, y); spanMaxY = Math.max(spanMaxY, y)
+         spanMinZ = Math.min(spanMinZ, z); spanMaxZ = Math.max(spanMaxZ, z)
+      }
+      const maxSpan = Math.max(spanMaxX - spanMinX, spanMaxY - spanMinY, spanMaxZ - spanMinZ, 1)
+
+      // Before the canvas has a real size the projection matrix is degenerate; fall back to a
+      // rough radius and let the next call (after layout / a file load) frame it properly
+      if (this.engine.getRenderWidth() < 1 || this.engine.getRenderHeight() < 1) {
+         camera.radius = 2 * maxSpan
+         return
+      }
+
+      // Start far enough back that every corner is in front of the camera on the first pass
+      camera.radius = 2 * maxSpan
+
+      // Zoom so the box fills 95% of the viewport width or 74% of its height, whichever binds
+      // first - the rest stays as breathing room
+      const targetX = 0.95
+      const targetY = 0.74
+      for (let pass = 0; pass < 8; pass++) {
+         const view = camera.getViewMatrix(true).m
+         const proj = camera.getProjectionMatrix(true).m
+         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, behind = false
+         for (const [x, y, z] of corners) {
+            // World -> view space (the view matrix is affine, so w stays 1)
+            const vx = view[0] * x + view[4] * y + view[8] * z + view[12]
+            const vy = view[1] * x + view[5] * y + view[9] * z + view[13]
+            const vz = view[2] * x + view[6] * y + view[10] * z + view[14]
+            // View -> clip space
+            const cw = proj[3] * vx + proj[7] * vy + proj[11] * vz + proj[15]
+            if (cw <= 0) {
+               behind = true
+               break
+            }
+            const ndcX = (proj[0] * vx + proj[4] * vy + proj[8] * vz + proj[12]) / cw
+            const ndcY = (proj[1] * vx + proj[5] * vy + proj[9] * vz + proj[13]) / cw
+            minX = Math.min(minX, ndcX); maxX = Math.max(maxX, ndcX)
+            minY = Math.min(minY, ndcY); maxY = Math.max(maxY, ndcY)
+         }
+         if (behind || !Number.isFinite(minX)) {
+            camera.radius *= 2
+            continue
+         }
+         // The visible clip range is [-1, 1] on each axis. Rescale by whichever axis overshoots
+         // its target fill fraction the most
+         const xFill = (maxX - minX) / 2
+         const yFill = (maxY - minY) / 2
+         if (xFill <= 0 && yFill <= 0) {
+            break
+         }
+         const nextRadius = camera.radius * Math.max(xFill / targetX, yFill / targetY)
+         const converged = Math.abs(nextRadius - camera.radius) < camera.radius * 0.01
+         camera.radius = nextRadius
+         if (converged) {
+            break
+         }
+      }
+
+      // Centre the box vertically between the top of a host playback-controls overlay and the
+      // top of the viewport - clip-space y +0.1 is the midpoint of that band. Perspective skews
+      // the projected box, so the look-at point is nudged until the box centre lands; damped
+      // empirical steps converge without depending on the exact FOV
+      const desiredCenter = 0.1
+      for (let pass = 0; pass < 6; pass++) {
+         const view = camera.getViewMatrix(true).m
+         const proj = camera.getProjectionMatrix(true).m
+         let minY = Infinity, maxY = -Infinity
+         for (const [x, y, z] of corners) {
+            const vx = view[0] * x + view[4] * y + view[8] * z + view[12]
+            const vy = view[1] * x + view[5] * y + view[9] * z + view[13]
+            const vz = view[2] * x + view[6] * y + view[10] * z + view[14]
+            const cw = proj[3] * vx + proj[7] * vy + proj[11] * vz + proj[15]
+            if (cw <= 0) {
+               continue
+            }
+            const ndcY = (proj[1] * vx + proj[5] * vy + proj[9] * vz + proj[13]) / cw
+            minY = Math.min(minY, ndcY)
+            maxY = Math.max(maxY, ndcY)
+         }
+         if (!Number.isFinite(minY)) {
+            break
+         }
+         const deltaNdc = desiredCenter - (minY + maxY) / 2
+         if (Math.abs(deltaNdc) < 0.01) {
+            break
+         }
+         // Lowering the target lifts the scene; ~0.6 radius per NDC unit lands close and the
+         // loop mops up the rest
+         const t = camera.target
+         camera.target = new Vector3(t.x, t.y - deltaNdc * 0.6 * camera.radius, t.z)
+      }
+   }
+
    // Excluded meshes (bed, axes, object boundaries) temporarily lift the clip planes while they render
    registerClipIgnore(mesh) {
       if (!mesh) {

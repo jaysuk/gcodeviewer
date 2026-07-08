@@ -108,6 +108,9 @@ function parseG0G1Fast(props: ProcessorProperties, line: string): Base | null {
    move.feedRate = props.CurrentFeedRate
    props.currentPosition.toArray(move.end)
    props.updateHeight(props.currentPosition.y)
+   if (move.extruding) {
+      props.updatePrintBounds(props.currentPosition.x, props.currentPosition.y, props.currentPosition.z)
+   }
 
    return move
 }

@@ -25,6 +25,7 @@ export default interface ViewerApi {
    showViewBox(visible: boolean): void
    setCameraDirection(direction: { x: number; y: number; z: number }): void
    resetCamera(): void
+   frameToContent(isEmbedded: boolean): void
    setBackgroundColor(color: string): void
    setProgressColor(color: string): void
    setZBelt(enabled: boolean, angle: number): void

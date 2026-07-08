@@ -15,6 +15,11 @@ self.addEventListener('message', async (message) => {
             addEventListener: (event, fn, opt) => {
                self.viewer.bindHandler('window', event, fn, opt)
             },
+            // Babylon's Engine.dispose() calls window/document.removeEventListener during its own
+            // cleanup - without this it throws "removeEventListener is not a function" and aborts
+            // the rest of dispose(). The worker is tearing down anyway at that point, so an actual
+            // main-thread removal isn't needed, just something callable.
+            removeEventListener: () => {},
             setTimeout: self.setTimeout.bind(self),
             PointerEvent: true,
          }
@@ -23,6 +28,7 @@ self.addEventListener('message', async (message) => {
             addEventListener: (event, fn, opt) => {
                self.viewer.bindHandler('document', event, fn, opt)
             },
+            removeEventListener: () => {},
             // Babylon probes document.createElement for wheel support and uses it to create 2D canvases
             // for DynamicTexture, so canvas requests must return a real OffscreenCanvas
             createElement: function (tagName) {
@@ -127,6 +133,9 @@ self.addEventListener('message', async (message) => {
          break
       case 'resetCamera':
          self.viewer.resetCamera()
+         break
+      case 'frameToContent':
+         self.viewer.frameToContent(message.data.isEmbedded)
          break
       case 'setBackgroundColor':
          self.viewer.setBackgroundColor(message.data.color)

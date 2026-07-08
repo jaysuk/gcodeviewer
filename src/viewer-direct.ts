@@ -105,6 +105,10 @@ export default class ViewerDirect implements ViewerApi {
       this.viewer.resetCamera()
    }
 
+   frameToContent(isEmbedded: boolean): void {
+      this.viewer.frameToContent(isEmbedded)
+   }
+
    setBackgroundColor(color: string): void {
       this.viewer.setBackgroundColor(color)
    }

@@ -341,6 +341,10 @@ export default class ViewerProxy implements ViewerApi {
       this.webWorker.postMessage({ type: 'resetCamera' })
    }
 
+   frameToContent(isEmbedded: boolean): void {
+      this.webWorker.postMessage({ type: 'frameToContent', isEmbedded: isEmbedded })
+   }
+
    setBackgroundColor(color: string): void {
       this.webWorker.postMessage({ type: 'setBackgroundColor', color: color })
    }

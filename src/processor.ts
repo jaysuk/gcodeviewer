@@ -131,6 +131,20 @@ export default class Processor {
       this.nozzle?.setAnimationSpeed(speed)
    }
 
+   // Bounding box (Babylon space) over every extruding move in the loaded file, or null if
+   // nothing extruding has been parsed yet - used to frame the camera on the actual print rather
+   // than the whole bed/travel envelope
+   getPrintBounds(): { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } } | null {
+      const p = this.processorProperties
+      if (!Number.isFinite(p.printBoundsMinX)) {
+         return null
+      }
+      return {
+         min: { x: p.printBoundsMinX, y: p.printBoundsMinY, z: p.printBoundsMinZ },
+         max: { x: p.printBoundsMaxX, y: p.printBoundsMaxY, z: p.printBoundsMaxZ },
+      }
+   }
+
    // Replaces the tool table, e.g. from the printer's object model. Colors are hex strings like '#ff0000'
    setTools(toolData: { color: string; diameter?: number }[]) {
       if (!toolData || toolData.length === 0) {

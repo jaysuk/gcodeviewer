@@ -25,6 +25,15 @@ export enum Units {
 export default class ProcessorProperties {
    maxHeight: number = 0
    minHeight: number = 0
+   // Bounding box (Babylon space: x, y=height, z) over EXTRUDING moves only - distinct from
+   // maxHeight/minHeight above (which track every move, extruding or not, for Z-clip slider
+   // bounds). Drives camera-framing: "fit the actual print", not "fit everywhere the head went".
+   printBoundsMinX: number = Infinity
+   printBoundsMinY: number = Infinity
+   printBoundsMinZ: number = Infinity
+   printBoundsMaxX: number = -Infinity
+   printBoundsMaxY: number = -Infinity
+   printBoundsMaxZ: number = -Infinity
    lineCount: number = 0
    layerDictionary: [] = []
    previousZ: number = 0 //Last Z value where extrusion occured  - This may need to go away to depend on slicer especially for non-planar prints
@@ -103,6 +112,16 @@ export default class ProcessorProperties {
       if (z < this.minHeight) {
          this.minHeight = z
       }
+   }
+
+   // Only called for extruding moves - see printBoundsMin/Max above
+   updatePrintBounds(x: number, y: number, z: number) {
+      if (x < this.printBoundsMinX) this.printBoundsMinX = x
+      if (x > this.printBoundsMaxX) this.printBoundsMaxX = x
+      if (y < this.printBoundsMinY) this.printBoundsMinY = y
+      if (y > this.printBoundsMaxY) this.printBoundsMaxY = y
+      if (z < this.printBoundsMinZ) this.printBoundsMinZ = z
+      if (z > this.printBoundsMaxZ) this.printBoundsMaxZ = z
    }
 
    buildToolFloat32Array() {
