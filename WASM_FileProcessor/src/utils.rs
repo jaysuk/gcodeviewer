@@ -241,12 +241,20 @@ pub fn detect_gcode_command(line: &str) -> Option<&str> {
     
     let start = i;
     i += 1;
-    
+
+    // RepRapFirmware's `T-1` (deselect all tools) is the one command letter that takes a negative
+    // number - without this, `T-1` never reaches the tool-number parser at all: the digit scan
+    // below stops immediately at '-', `i` never advances past `start + 1`, and the line falls
+    // through as an unrecognized/comment line further up the call chain.
+    if (first_char == b'T' || first_char == b't') && i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+    }
+
     // Parse number after the letter
     while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
         i += 1;
     }
-    
+
     if i > start + 1 {
         Some(&line[start..i])
     } else {
@@ -312,111 +320,110 @@ pub enum ArcPlane {
     YZ,
 }
 
-/// Generate tessellated points for G2/G3 arc moves
-/// Equivalent to TypeScript's doArc function
+/// Generate tessellated points for G2/G3 arc moves - a faithful port of TypeScript's doArc
+/// (src/util.ts). `start_babylon`/`end_babylon` must already be fully resolved (workplace offset
+/// and absolute/relative applied - see G2G3.rs's parse_arc_move, which mirrors G0G1.rs's own
+/// per-axis resolution); `i_offset`/`j_offset`/`k_offset` are raw, un-swapped, un-offset literal
+/// token values (TS's getNumber(token, i, false, 0) never applies workplace/relative logic to
+/// I/J/K/R - only X/Y/Z get that treatment).
+///
+/// Returns Ok with an EMPTY point list (not an Err) for every case doArc itself doesn't throw for
+/// - "radius too small" included. The caller (G2G3.rs) must not advance current_position when the
+/// result is empty, exactly like g2g3.ts's `curPt` accumulator: it starts at the pre-arc position
+/// and is only overwritten by iterating `arcResult.points`, so if tessellation produces zero
+/// points the position silently doesn't move at all, regardless of what X/Y/Z was parsed.
 pub fn tessellate_arc(
-    current_position: Vector3,
-    target_position: Vector3,
+    start_babylon: Vector3,
+    end_babylon: Vector3,
     i_offset: f64,
     j_offset: f64,
-    k_offset: Option<f64>,
+    k_offset: f64,
     radius: Option<f64>,
     is_clockwise: bool,
     arc_plane: ArcPlane,
     arc_segment_length: f64,
     fix_radius: bool,
-    relative_move: bool,
-    workplace_offset: Vector3,
-) -> Result<ArcResult, String> {
-    
-    let mut current = current_position;
-    let mut target = target_position;
-    
-    // Apply workplace offset if not relative
-    if !relative_move {
-        target.x += workplace_offset.x;
-        target.y += workplace_offset.y;
-        target.z += workplace_offset.z;
-    }
-    
+) -> ArcResult {
+    // Un-swap Babylon (x, y=height, z=gcodeY) -> gcode (x, y, z) space, matching doArc's
+    // `current = new Vector3(currentPosition.x, currentPosition.z, currentPosition.y)`
+    let current = [start_babylon.x, start_babylon.z, start_babylon.y];
+    let target = [end_babylon.x, end_babylon.z, end_babylon.y];
+
     let mut i = i_offset;
     let mut j = j_offset;
-    let mut k = k_offset.unwrap_or(0.0);
-    
-    // Define axes based on arc plane
-    let (axis0_idx, axis1_idx, axis2_idx) = match arc_plane {
-        ArcPlane::XY => (0, 1, 2), // x, y, z
-        ArcPlane::XZ => (2, 0, 1), // z, x, y (inverted for correct direction per RRF)
-        ArcPlane::YZ => (1, 2, 0), // y, z, x
+    let k = k_offset;
+
+    // Axis routing per arc plane - matches util.ts's doArc exactly, including the XZ/YZ I/J/K
+    // re-routing (this is NOT a simple i/j swap for XZ, as an earlier version of this port
+    // assumed - it specifically pulls the axis0 offset from K and axis1 offset from the original I)
+    let (axis0, axis1, axis2) = match arc_plane {
+        ArcPlane::XY => (0usize, 1usize, 2usize),
+        ArcPlane::XZ => {
+            let original_i = i;
+            i = k; // axis0 (z) offset comes from K
+            j = original_i; // axis1 (x) offset comes from I
+            (2, 0, 1)
+        }
+        ArcPlane::YZ => {
+            i = j; // axis0 (y) offset comes from J
+            j = k; // axis1 (z) offset comes from K
+            (1, 2, 0)
+        }
     };
-    
-    // For XZ plane, swap i and j
-    if matches!(arc_plane, ArcPlane::XZ) {
-        let temp = j;
-        j = i;
-        i = temp;
-    }
-    
-    let current_array = [current.x, current.y, current.z];
-    let target_array = [target.x, target.y, target.z];
-    
+
     // Handle radius-based arc specification (R parameter)
     if let Some(r) = radius {
-        let delta0 = target_array[axis0_idx] - current_array[axis0_idx];
-        let delta1 = target_array[axis1_idx] - current_array[axis1_idx];
-        
+        let delta0 = target[axis0] - current[axis0];
+        let delta1 = target[axis1] - current[axis1];
+
         let d_squared = delta0 * delta0 + delta1 * delta1;
         if d_squared == 0.0 {
-            return Ok(ArcResult {
-                final_position: current,
-                intermediate_points: vec![],
-            });
+            // Matches doArc: `return { position: current.clone(), points: [] }` - the position
+            // field is never actually read by the caller, only the empty points list matters
+            return ArcResult { final_position: start_babylon, intermediate_points: vec![] };
         }
-        
+
         let mut h_squared = r * r - d_squared / 4.0;
+        // Stays 0.0 (not computed) when h_squared is negative but within the -2% tolerance band -
+        // matches doArc's `let hDivD = 0` default, which the `else` branch only overwrites when
+        // it goes on to the fixRadius/error path, not for the borderline-negative case
         let mut h_div_d = 0.0;
-        
+
         if h_squared >= 0.0 {
             h_div_d = (h_squared / d_squared).sqrt();
-        } else {
-            if h_squared < -0.02 * r * r {
-                if fix_radius {
-                    let min_r = ((delta0 / 2.0).powi(2) + (delta1 / 2.0).powi(2)).sqrt();
-                    h_squared = min_r * min_r - d_squared / 4.0;
-                    h_div_d = (h_squared / d_squared).sqrt();
-                } else {
-                    return Err("G2/G3: Radius too small".to_string());
-                }
+        } else if h_squared < -0.02 * r * r {
+            if fix_radius {
+                let min_r = ((delta0 / 2.0).powi(2) + (delta1 / 2.0).powi(2)).sqrt();
+                h_squared = min_r * min_r - d_squared / 4.0;
+                h_div_d = (h_squared / d_squared).sqrt();
+            } else {
+                // doArc logs and returns the TARGET position with empty points here (not an
+                // exception) - but since the caller never reads the position field, this is
+                // behaviorally identical to any other empty-points case
+                return ArcResult { final_position: end_babylon, intermediate_points: vec![] };
             }
         }
-        
-        // Determine direction based on RRF logic
+
         if (is_clockwise && r < 0.0) || (!is_clockwise && r > 0.0) {
             h_div_d = -h_div_d;
         }
-        
+
         i = delta0 / 2.0 + delta1 * h_div_d;
         j = delta1 / 2.0 - delta0 * h_div_d;
-    } else {
-        // Center point is offset from current position
-        if i == 0.0 && j == 0.0 {
-            return Ok(ArcResult {
-                final_position: current,
-                intermediate_points: vec![],
-            });
-        }
+    } else if i == 0.0 && j == 0.0 {
+        // Center point is offset from current position - need at least one of I/J
+        return ArcResult { final_position: start_babylon, intermediate_points: vec![] };
     }
-    
-    let whole_circle = current_array[axis0_idx] == target_array[axis0_idx] && 
-                      current_array[axis1_idx] == target_array[axis1_idx];
-    
-    let center0 = current_array[axis0_idx] + i;
-    let center1 = current_array[axis1_idx] + j;
-    
+
+    let whole_circle = current[axis0] == target[axis0] && current[axis1] == target[axis1];
+
+    let center0 = current[axis0] + i;
+    let center1 = current[axis1] + j;
+
     let arc_radius = (i * i + j * j).sqrt();
     let arc_current_angle = (-j).atan2(-i);
-    let final_theta = (target_array[axis1_idx] - center1).atan2(target_array[axis0_idx] - center0);
-    
+    let final_theta = (target[axis1] - center1).atan2(target[axis0] - center0);
+
     let total_arc = if whole_circle {
         2.0 * std::f64::consts::PI
     } else {
@@ -425,57 +432,52 @@ pub fn tessellate_arc(
         } else {
             final_theta - arc_current_angle
         };
-        
         if arc < 0.0 {
             arc += 2.0 * std::f64::consts::PI;
         }
         arc
     };
-    
+
     let mut total_segments = (arc_radius * total_arc) / arc_segment_length;
     if total_segments < 1.0 {
         total_segments = 1.0;
     }
-    let total_segments = total_segments as usize;
-    
-    let arc_angle_increment = if is_clockwise {
-        -(total_arc / total_segments as f64)
-    } else {
-        total_arc / total_segments as f64
-    };
-    
-    let axis2_dist = target_array[axis2_idx] - current_array[axis2_idx];
-    let axis2_step = axis2_dist / total_segments as f64;
-    
-    let mut points = Vec::with_capacity(total_segments);
+    // total_segments stays a float through the loop bound and increment division, matching TS
+    // exactly (`for (let moveIdx = 0; moveIdx < totalSegments - 1; moveIdx++)`) rather than
+    // truncating to an integer segment count up front, which would round differently.
+
+    let arc_angle_increment = (total_arc / total_segments) * if is_clockwise { -1.0 } else { 1.0 };
+
+    let axis2_dist = target[axis2] - current[axis2];
+    let axis2_step = axis2_dist / total_segments;
+
+    let mut points = Vec::new();
     let mut current_angle = arc_current_angle;
-    let mut p2 = current_array[axis2_idx];
-    
-    // Generate intermediate points
-    for _ in 0..(total_segments - 1) {
+    let mut p2 = current[axis2];
+
+    let mut move_idx: f64 = 0.0;
+    while move_idx < total_segments - 1.0 {
         current_angle += arc_angle_increment;
         let p0 = center0 + arc_radius * current_angle.cos();
         let p1 = center1 + arc_radius * current_angle.sin();
         p2 += axis2_step;
-        
-        // Convert back to world coordinates based on arc plane
-        let world_point = match arc_plane {
-            ArcPlane::XY => Vector3 { x: p0, y: p1, z: p2 },
-            ArcPlane::XZ => Vector3 { x: p1, y: p2, z: p0 },
-            ArcPlane::YZ => Vector3 { x: p2, y: p0, z: p1 },
-        };
-        
-        points.push(world_point);
+
+        let mut world = [0.0f64; 3];
+        world[axis0] = p0;
+        world[axis1] = p1;
+        world[axis2] = p2;
+
+        // Re-swap gcode -> Babylon space
+        points.push(Vector3 { x: world[0], y: world[2], z: world[1] });
+        move_idx += 1.0;
     }
-    
-    // Add final point and save a copy for the result
-    let final_pos = target.clone();
-    points.push(target);
-    
-    Ok(ArcResult {
-        final_position: final_pos,
+
+    points.push(end_babylon.clone());
+
+    ArcResult {
+        final_position: end_babylon,
         intermediate_points: points,
-    })
+    }
 }
 
 // Performance testing utilities

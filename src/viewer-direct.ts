@@ -121,6 +121,10 @@ export default class ViewerDirect implements ViewerApi {
       this.viewer.setZBelt(enabled, angle)
    }
 
+   setG1AsExtrusion(enabled: boolean): void {
+      this.viewer.setG1AsExtrusion(enabled)
+   }
+
    setCameraInertia(enabled: boolean): void {
       this.viewer.setCameraInertia(enabled)
    }
@@ -155,6 +159,42 @@ export default class ViewerDirect implements ViewerApi {
 
    showAxes(visible: boolean): void {
       this.viewer.showAxes(visible)
+   }
+
+   showWorkplace(visible: boolean): void {
+      this.viewer.showWorkplace(visible)
+   }
+
+   setWorkplaceOffsets(offsets: { x: number; y: number; z: number }[]): void {
+      this.viewer.setWorkplaceOffsets(offsets)
+   }
+
+   setCurrentWorkplaceIndex(index: number): void {
+      this.viewer.setCurrentWorkplaceIndex(index)
+   }
+
+   setNozzlePosition(position: { x: number; y: number; z: number }): void {
+      this.viewer.setNozzlePosition(position)
+   }
+
+   setShowTravels(visible: boolean): void {
+      this.viewer.setShowTravels(visible)
+   }
+
+   setPersistTravels(persist: boolean): void {
+      this.viewer.setPersistTravels(persist)
+   }
+
+   setFeedColors(minColor: string, maxColor: string): void {
+      this.viewer.setFeedColors(minColor, maxColor)
+   }
+
+   setFeedRateRange(min: number | null, max: number | null): void {
+      this.viewer.setFeedRateRange(min, max)
+   }
+
+   cancelLoad(): void {
+      this.viewer.cancelLoad()
    }
 
    loadObjectBoundaries(objects: any[]): void {

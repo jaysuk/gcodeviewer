@@ -23,10 +23,16 @@ pub fn parse_tool_command(
     let mut temperature: Option<f64> = None;
     let mut wait_for_temperature = false;
     
-    // Parse tool number from T command (e.g., T0, T1)
+    // Parse tool number from T command (e.g., T0, T1). RepRapFirmware's `T-1` deselects all
+    // tools - parsed as i32 first (not u32, which would reject the '-' entirely and drop the
+    // command) and clamped to 0 for any negative index. Only clamping negatives, not upper-bound
+    // checking against properties.tools.len(): Rust's default tool table has a single entry
+    // (unlike the TypeScript parser's 5 pre-populated defaults), so an upper-bound clamp here
+    // would incorrectly reject any ordinary T1+ selection.
     if command.starts_with('T') || command.starts_with('t') {
-        if let Ok(tool_num) = command[1..].parse::<u32>() {
-            tool_number = Some(tool_num);
+        if let Ok(parsed) = command[1..].parse::<i32>() {
+            let clamped = if parsed < 0 { 0 } else { parsed };
+            tool_number = Some(clamped as u32);
         }
     }
     
@@ -137,13 +143,24 @@ pub fn parse_m_command(
     
     let line_bytes = line.as_bytes();
     let mut pos = 0;
-    
+
+    // Skip leading whitespace - the caller passes the original (untrimmed) line, not the
+    // router's trimmed copy
+    while pos < line_bytes.len() && (line_bytes[pos] == b' ' || line_bytes[pos] == b'\t') {
+        pos += 1;
+    }
+    let command_start = pos;
+
     // Extract M-code number
     while pos < line_bytes.len() && line_bytes[pos] != b' ' && line_bytes[pos] != b'\t' {
         pos += 1;
     }
-    
-    let command = &line[..pos];
+
+    // Uppercased so "m84"/indented "  M84" match the same M-code arms below as "M84" does -
+    // matches TS's ProcessLine.ts, which uppercases and trims before routing (`workingLine`, the
+    // fastGCodeRegex's `i` flag)
+    let command_owned = line[command_start..pos].to_uppercase();
+    let command = command_owned.as_str();
     let mut parameters = Vec::new();
     
     // Parse parameters
@@ -240,7 +257,28 @@ mod tests {
             assert_eq!(props.current_tool.tool_number, 1);
         }
     }
-    
+
+    #[test]
+    fn test_parse_tool_deselect_all() {
+        // RepRapFirmware's T-1 deselects all tools - must not be dropped/ignored, and must not
+        // reach the router as an unrecognized line (detect_gcode_command has to see it as a
+        // T-command at all before parse_tool_command ever runs)
+        use crate::GCodeCommands::ProcessLine::process_line;
+        let mut props = ProcessorProperties::new();
+
+        let result = process_line(&mut props, "T-1", 100, 1);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), GCodeLine::Tool(_)));
+        assert_eq!(props.current_tool.tool_number, 0);
+
+        let result2 = parse_tool_command(&mut props, "T-1", 100, 1);
+        if let Ok(GCodeLine::Tool(tool_cmd)) = result2 {
+            assert_eq!(tool_cmd.tool_number, Some(0));
+        } else {
+            panic!("expected a Tool command for T-1");
+        }
+    }
+
     #[test]
     fn test_parse_hotend_temp() {
         let mut props = ProcessorProperties::new();
@@ -275,9 +313,20 @@ mod tests {
     fn test_parse_m84_disable_steppers() {
         let mut props = ProcessorProperties::new();
         props.steppers_enabled = true;
-        
+
         let result = parse_m_command(&mut props, "M84", 400, 4);
         assert!(result.is_ok());
         assert!(!props.steppers_enabled);
+    }
+
+    #[test]
+    fn test_parse_m_command_lowercase_and_indented() {
+        // The router (ProcessLine.rs) passes the original, untrimmed line - a leading-whitespace
+        // or lowercase M-code previously failed the exact string match against "M84" silently
+        let mut props = ProcessorProperties::new();
+        props.steppers_enabled = true;
+        let result = parse_m_command(&mut props, "  m84", 400, 4);
+        assert!(result.is_ok());
+        assert!(!props.steppers_enabled, "lowercase/indented m84 should still disable steppers");
     }
 }

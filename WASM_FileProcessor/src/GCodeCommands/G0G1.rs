@@ -13,41 +13,45 @@ pub fn parse_g0_g1_move(
     
     let bytes = line.as_bytes();
     let mut move_data = MoveData::new(file_position, line_number, line.to_string());
-    
+
     // Copy current position as start position
     move_data.start = props.current_position.clone();
     move_data.tool = props.current_tool.tool_number;
-    
-    // Initialize with current position (will be updated by parameters)
-    let mut x = props.current_position.x;
-    let mut y = props.current_position.y;
-    let mut z = props.current_position.z;
+
+    // Collect raw token values first, apply them in a second pass below - required for Z-belt
+    // mode, where Y's transform reads currentZ (set by the Z token). TS handles this by reversing
+    // its token list before processing (so whichever of Y/Z comes last in the line is applied
+    // first); collecting-then-applying-in-a-fixed-order is equivalent for the conventional
+    // X/Y/Z/E/F token order and more robust for any other order.
+    let mut x_token: Option<f64> = None;
+    let mut y_token: Option<f64> = None;
+    let mut z_token: Option<f64> = None;
     let mut e: Option<f64> = None;
     let mut f: Option<f64> = None;
     let mut is_g1 = false;
     let mut force_absolute = false;
-    
+
     // Parse the line character by character for maximum speed
     let mut i = 0;
     let len = bytes.len();
-    
+
     // Fast scan through the line
     while i < len {
         // Skip whitespace
         while i < len && bytes[i] == b' ' {
             i += 1;
         }
-        
+
         if i >= len {
             break;
         }
-        
+
         let param_start = i;
-        
+
         // Try to parse a parameter
         if let Some((letter, value, consumed)) = parse_parameter(bytes, i) {
             i += consumed;
-            
+
             match letter {
                 'G' => {
                     let g_num = value as u32;
@@ -58,47 +62,9 @@ pub fn parse_g0_g1_move(
                         _ => {} // Other G-codes, ignore for now
                     }
                 }
-                'X' => {
-                    if props.z_belt {
-                        // For Z-belt, X coordinate is absolute
-                        x = value;
-                    } else {
-                        x = if props.absolute_positioning || force_absolute {
-                            value + props.current_workplace().x
-                        } else {
-                            props.current_position.x + value
-                        };
-                    }
-                }
-                'Y' => {
-                    if props.z_belt {
-                        // For Z-belt, Y value is transformed
-                        let new_y = value * props.hyp;
-                        y = new_y;
-                        z = props.current_z + new_y * props.adj;
-                    } else {
-                        // CRITICAL FIX: Y coordinate goes to Z position (matching TypeScript line 47-50)
-                        z = if props.absolute_positioning || force_absolute {
-                            value + props.current_workplace().y
-                        } else {
-                            props.current_position.z + value
-                        };
-                    }
-                }
-                'Z' => {
-                    if props.z_belt {
-                        // For Z-belt, Z value updates current_z and recalculates Z
-                        props.current_z = -value;
-                        z = props.current_z + y * props.adj;
-                    } else {
-                        // CRITICAL FIX: Z coordinate goes to Y position (matching TypeScript line 58-61)
-                        y = if props.absolute_positioning || force_absolute {
-                            value + props.current_workplace().z
-                        } else {
-                            props.current_position.y + value
-                        };
-                    }
-                }
+                'X' => x_token = Some(value),
+                'Y' => y_token = Some(value),
+                'Z' => z_token = Some(value),
                 'E' => {
                     e = Some(value);
                     if value > 0.0 {
@@ -117,7 +83,54 @@ pub fn parse_g0_g1_move(
             i += 1;
         }
     }
-    
+
+    // Initialize with current position, updated below from whichever tokens were present
+    let mut x = props.current_position.x;
+    let mut y = props.current_position.y;
+    let mut z = props.current_position.z;
+
+    if props.z_belt {
+        // Z must be applied before Y - Y's transform reads props.current_z, which the Z token
+        // updates. TS achieves this by reversing its token list; this fixed application order
+        // gets the same result without depending on the line's textual token order.
+        if let Some(value) = z_token {
+            props.current_z = -value;
+            z = props.current_z + y * props.adj;
+        }
+        if let Some(value) = y_token {
+            y = value * props.hyp;
+            z = props.current_z + y * props.adj;
+        }
+        if let Some(value) = x_token {
+            // For Z-belt, X coordinate is absolute
+            x = value;
+        }
+    } else {
+        if let Some(value) = x_token {
+            x = if props.absolute_positioning || force_absolute {
+                value + props.current_workplace().x
+            } else {
+                props.current_position.x + value
+            };
+        }
+        if let Some(value) = y_token {
+            // CRITICAL FIX: Y coordinate goes to Z position (matching TypeScript line 47-50)
+            z = if props.absolute_positioning || force_absolute {
+                value + props.current_workplace().y
+            } else {
+                props.current_position.z + value
+            };
+        }
+        if let Some(value) = z_token {
+            // CRITICAL FIX: Z coordinate goes to Y position (matching TypeScript line 58-61)
+            y = if props.absolute_positioning || force_absolute {
+                value + props.current_workplace().z
+            } else {
+                props.current_position.y + value
+            };
+        }
+    }
+
     // Update processor state - coordinate swap now happens during parsing (above)
     props.current_position.x = x;
     props.current_position.y = y;  // Already swapped during parsing
@@ -126,13 +139,15 @@ pub fn parse_g0_g1_move(
     // Set end position
     move_data.end = props.current_position.clone();
     
-    // Handle G1 vs G0 differences
+    // Use slicer feature color instead of tool color for proper rendering - matches TS's Move
+    // constructor (move.ts:40), which assigns this to every move regardless of G0 vs G1. This
+    // used to be gated on `is_g1`, so an extruding G0 rendered white instead of its feature color.
+    move_data.color = props.current_feature_color.clone();
+
     if is_g1 {
-        // Use slicer feature color instead of tool color for proper rendering
-        move_data.color = props.current_feature_color.clone();
         move_data.extruding = move_data.extruding || props.cnc_mode;
     }
-    
+
     // Set slicer feature flags
     move_data.is_perimeter = props.current_is_perimeter;
     move_data.is_support = props.current_is_support;
@@ -165,9 +180,19 @@ pub fn parse_g0_g1_move(
     
     move_data.feed_rate = props.current_feed_rate;
     
-    // Update height tracking
-    props.update_height(move_data.end.z);
-    
+    // Update height tracking - .end.y holds the actual height (Babylon-space convention: x, y =
+    // height, z = gcode Y - see the "Remember Y->Z mapping" test comments below). This was
+    // previously reading .end.z (the gcode Y value) instead, silently masked because the old
+    // hybrid pipeline always re-derived max/minHeight via a full TypeScript re-parse afterward,
+    // which used the correct field and overwrote this wrong value every time.
+    props.update_height(move_data.end.y);
+
+    // Only extruding moves count toward the print's bounding box (see printBounds docs) - drives
+    // camera framing without needing a second full re-parse of the file
+    if move_data.extruding {
+        props.update_print_bounds(move_data.end.x, move_data.end.y, move_data.end.z);
+    }
+
     // Update total segment count
     props.total_rendered_segments += 1;
     
@@ -309,6 +334,62 @@ mod tests {
             assert_eq!(move_data.end.z, 25.0); // Y->Z mapping
             assert!(move_data.extruding); // Should be extruding due to E parameter
             assert_eq!(move_data.feed_rate, 1500.0);
+        }
+    }
+
+    #[test]
+    fn test_z_belt_y_before_z_uses_fresh_current_z() {
+        // Y's belt transform reads props.current_z, which the Z token on the SAME line updates -
+        // Z must be applied before Y regardless of which one appears first in the line text. This
+        // line writes Y before Z (the conventional order), which is exactly the case that used to
+        // read the *previous* line's stale current_z instead of this line's.
+        let mut props = ProcessorProperties::new();
+        props.z_belt = true;
+        props.set_gantry_angle(45.0);
+
+        let result = parse_g0_g1_move(&mut props, "G1 X10 Y20 Z5", 100, 1);
+        assert!(result.is_ok());
+
+        // Compute the expected result the same way the parser should: Z first (sets current_z),
+        // then Y (reads the fresh current_z)
+        let mut expected_props = ProcessorProperties::new();
+        expected_props.z_belt = true;
+        expected_props.set_gantry_angle(45.0);
+        expected_props.current_z = -5.0;
+        let expected_y = 20.0 * expected_props.hyp;
+        let expected_z = expected_props.current_z + expected_y * expected_props.adj;
+
+        if let Ok(GCodeLine::Move(move_data)) = result {
+            assert!((move_data.end.y - expected_y).abs() < 1e-9);
+            assert!((move_data.end.z - expected_z).abs() < 1e-9);
+        } else {
+            panic!("expected a Move");
+        }
+    }
+
+    #[test]
+    fn test_z_belt_ordering_independent_of_token_order() {
+        // Same values, Z written before Y in the line - must produce an identical result to the
+        // Y-before-Z case above, since the fix no longer depends on textual token order.
+        let mut props = ProcessorProperties::new();
+        props.z_belt = true;
+        props.set_gantry_angle(45.0);
+
+        let result = parse_g0_g1_move(&mut props, "G1 X10 Z5 Y20", 100, 1);
+        assert!(result.is_ok());
+
+        let mut expected_props = ProcessorProperties::new();
+        expected_props.z_belt = true;
+        expected_props.set_gantry_angle(45.0);
+        expected_props.current_z = -5.0;
+        let expected_y = 20.0 * expected_props.hyp;
+        let expected_z = expected_props.current_z + expected_y * expected_props.adj;
+
+        if let Ok(GCodeLine::Move(move_data)) = result {
+            assert!((move_data.end.y - expected_y).abs() < 1e-9);
+            assert!((move_data.end.z - expected_z).abs() < 1e-9);
+        } else {
+            panic!("expected a Move");
         }
     }
 }

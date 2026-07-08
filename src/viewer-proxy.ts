@@ -210,6 +210,7 @@ export default class ViewerProxy implements ViewerApi {
          start: data.start,
          end: data.end,
          failed: !!data.failed,
+         cancelled: !!data.cancelled,
          maxHeight: data.maxHeight ?? 0,
          minHeight: data.minHeight ?? 0,
          maxFeedRate: data.maxFeedRate ?? 0,
@@ -357,6 +358,10 @@ export default class ViewerProxy implements ViewerApi {
       this.webWorker.postMessage({ type: 'setZBelt', enabled: enabled, angle: angle })
    }
 
+   setG1AsExtrusion(enabled: boolean): void {
+      this.webWorker.postMessage({ type: 'setG1AsExtrusion', enabled: enabled })
+   }
+
    setCameraInertia(enabled: boolean): void {
       this.webWorker.postMessage({ type: 'setCameraInertia', enabled: enabled })
    }
@@ -391,6 +396,42 @@ export default class ViewerProxy implements ViewerApi {
 
    showAxes(visible: boolean): void {
       this.webWorker.postMessage({ type: 'showAxes', visible: visible })
+   }
+
+   showWorkplace(visible: boolean): void {
+      this.webWorker.postMessage({ type: 'showWorkplace', visible: visible })
+   }
+
+   setWorkplaceOffsets(offsets: { x: number; y: number; z: number }[]): void {
+      this.webWorker.postMessage({ type: 'setWorkplaceOffsets', offsets: offsets })
+   }
+
+   setCurrentWorkplaceIndex(index: number): void {
+      this.webWorker.postMessage({ type: 'setCurrentWorkplaceIndex', index: index })
+   }
+
+   setNozzlePosition(position: { x: number; y: number; z: number }): void {
+      this.webWorker.postMessage({ type: 'setNozzlePosition', position: position })
+   }
+
+   setShowTravels(visible: boolean): void {
+      this.webWorker.postMessage({ type: 'setShowTravels', visible: visible })
+   }
+
+   setPersistTravels(persist: boolean): void {
+      this.webWorker.postMessage({ type: 'setPersistTravels', persist: persist })
+   }
+
+   setFeedColors(minColor: string, maxColor: string): void {
+      this.webWorker.postMessage({ type: 'setFeedColors', minColor: minColor, maxColor: maxColor })
+   }
+
+   setFeedRateRange(min: number | null, max: number | null): void {
+      this.webWorker.postMessage({ type: 'setFeedRateRange', min: min, max: max })
+   }
+
+   cancelLoad(): void {
+      this.webWorker.postMessage({ type: 'cancelLoad' })
    }
 
    // Boundary data from the printer object model; objectSelected/objectLabel events arrive via passThru

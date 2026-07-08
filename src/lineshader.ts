@@ -45,6 +45,10 @@ export default class LineShaderMaterial {
 
    uniform bool alphaMode;
    uniform bool lineMesh;
+   uniform vec3 minFeedColor;
+   uniform vec3 maxFeedColor;
+   uniform bool showTravels;
+   uniform bool persistTravels;
 
    varying vec3 eye_normal;
    flat out vec3 vDiffColor;
@@ -77,7 +81,7 @@ export default class LineShaderMaterial {
             break;
             case 2:
                float m = (feedRate - minFeedRate) / (maxFeedRate - minFeedRate);
-               vDiffColor = mix(vec3(0,0,1), vec3(1,0,0), m); 
+               vDiffColor = mix(minFeedColor, maxFeedColor, m);
                break;
             case 5:
                vDiffColor = pickColor.rgb;
@@ -94,7 +98,22 @@ export default class LineShaderMaterial {
          }
          else if (tool >= 254.0)  //Travel
          {
-            if(fShow >= 0.0 && fShow < animationLength / 8.0) 
+            if (!showTravels)
+            {
+               bDiscard = 1.;
+            }
+            else if (persistTravels)
+            {
+               if (fShow >= 0.0)
+               {
+                  vDiffColor = vec3(1.0, 0.0, 0.0);
+               }
+               else
+               {
+                  bDiscard = 1.;
+               }
+            }
+            else if(fShow >= 0.0 && fShow < animationLength / 8.0)
             {
                   vDiffColor = mix(vec3(1.0, 0.0, 0.0), vec3(0.5,0.0,0.0), fShow / animationLength / 2.0);
             }
@@ -244,6 +263,10 @@ export default class LineShaderMaterial {
                'lineMesh',
                'showSupports',
                'utime',
+               'minFeedColor',
+               'maxFeedColor',
+               'showTravels',
+               'persistTravels',
             ],
          },
       )
@@ -258,6 +281,10 @@ export default class LineShaderMaterial {
             ?.setFloat('animationLength', 5000)
             .setVector4('progressColor', new Vector4(0, 1, 0, 1))
             .setBool('lineMesh', false) // Default to false (lighting enabled)
+            .setFloat3('minFeedColor', 0, 0, 1) // Matches the previous hardcoded blue->red gradient
+            .setFloat3('maxFeedColor', 1, 0, 0)
+            .setBool('showTravels', true)
+            .setBool('persistTravels', false)
       })
 
       //Per loop
@@ -331,6 +358,30 @@ export default class LineShaderMaterial {
          this.material
             .getEffect()
             ?.setFloat4('progressColor', color[0] / 255, color[1] / 255, color[2] / 255, color[3] / 255)
+      })
+   }
+
+   setMinFeedColor(rgb: [number, number, number]) {
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setFloat3('minFeedColor', rgb[0], rgb[1], rgb[2])
+      })
+   }
+
+   setMaxFeedColor(rgb: [number, number, number]) {
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setFloat3('maxFeedColor', rgb[0], rgb[1], rgb[2])
+      })
+   }
+
+   setShowTravels(visible: boolean) {
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setBool('showTravels', visible)
+      })
+   }
+
+   setPersistTravels(persist: boolean) {
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setBool('persistTravels', persist)
       })
    }
 

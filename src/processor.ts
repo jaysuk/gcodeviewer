@@ -1,4 +1,4 @@
-import { Base, Move, ArcMove, Move_Thin } from './GCodeLines'
+import { Base, Move, ArcMove, Move_Thin, IndexEntry } from './GCodeLines'
 import ProcessorProperties from './processorproperties'
 import { ProcessLine } from './GCodeCommands/processline'
 import { Scene } from '@babylonjs/core/scene'
@@ -21,12 +21,19 @@ export interface LoadFileResult {
    start: number
    end: number
    failed: boolean
+   // True when the load was aborted via cancelLoad() rather than failing on its own - distinct
+   // from failed so a consumer doesn't surface a user-initiated cancel as an error
+   cancelled: boolean
    // Printer Z range spanned by extruding moves - drives a consumer's Z-clip slider bounds
    maxHeight: number
    minHeight: number
    maxFeedRate: number
    minFeedRate: number
 }
+
+// Thrown by checkCancelled() to unwind out of whichever load loop is currently running -
+// caught in loadFile() and reported as cancelled rather than failed
+class LoadCancelledError extends Error {}
 
 export default class Processor {
    gCodeLines: Base[] = []
@@ -46,6 +53,20 @@ export default class Processor {
    nozzle: Nozzle | null = null
    // Last tool table provided via setTools(), re-applied after every loadFile() resets processorProperties
    private userTools: { color: string; diameter?: number }[] | null = null
+   // Live-synced workplace offsets (e.g. from the printer's object model), re-applied after every
+   // loadFile() resets processorProperties - see setWorkplaceOffsets/setCurrentWorkplaceIndex
+   private pendingWorkplaceOffsets: { x: number; y: number; z: number }[] | null = null
+   private pendingWorkplaceIndex: number | null = null
+   // Travel-line display settings, re-applied to every material created (materials are recreated
+   // per loadFile())
+   private showTravels = true
+   private persistTravels = false
+   // Feed-rate legend colors and an optional display-range override, re-applied to every material
+   private minFeedColor: [number, number, number] = [0, 0, 1]
+   private maxFeedColor: [number, number, number] = [1, 0, 0]
+   private feedRateRangeOverride: { min: number; max: number } | null = null
+   // Set by cancelLoad(), checked between chunks of whichever load loop is running
+   private cancelRequested = false
    // Track position data for nozzle animation since Move objects get replaced with Move_Thin
    positionTracker: Map<number, { x: number; y: number; z: number; feedRate: number; extruding: boolean }> = new Map()
    // Animation playback state
@@ -131,6 +152,13 @@ export default class Processor {
       this.nozzle?.setAnimationSpeed(speed)
    }
 
+   // Places the nozzle marker at a raw XYZ instantly, bypassing the closest-tracked-file-position
+   // lookup that updateFilePosition() uses - for live machine-position tracking, where the caller
+   // has the real toolhead position and isn't scrubbing/playing back the loaded file
+   setNozzlePosition(position: { x: number; y: number; z: number }) {
+      this.nozzle?.forcePosition(position)
+   }
+
    // Bounding box (Babylon space) over every extruding move in the loaded file, or null if
    // nothing extruding has been parsed yet - used to frame the camera on the actual print rather
    // than the whole bed/travel envelope
@@ -187,6 +215,118 @@ export default class Processor {
       }
       this.processorProperties.zBelt = this.pendingZBelt.enabled
       this.processorProperties.setGantryAngle(this.pendingZBelt.angle)
+      // Previously never reached the WASM parser at all - belt files silently parsed with
+      // standard (non-belt) kinematics whenever WASM was enabled
+      this.wasmProcessor?.setZBelt(this.pendingZBelt.enabled, this.pendingZBelt.angle)
+   }
+
+   // CNC mode - treats every G1 as an extrusion (the "g1AsExtrusion" troubleshooting aid for
+   // travel-heavy CNC files). A parse-time setting like zBelt: sticky across loadFile() resets,
+   // pushed to the WASM parser too (previously unsettable on either side).
+   private pendingCncMode: boolean | null = null
+
+   setG1AsExtrusion(enabled: boolean) {
+      this.pendingCncMode = enabled
+      this.applyCncMode()
+   }
+
+   private applyCncMode() {
+      if (this.pendingCncMode === null) {
+         return
+      }
+      this.processorProperties.cncMode = this.pendingCncMode
+      this.wasmProcessor?.setCncMode(this.pendingCncMode)
+   }
+
+   // Overrides the workplace offset table (G54-G59.3), e.g. synced live from the printer's object
+   // model rather than relying on what the loaded file itself sets. Live-applied to the current
+   // ProcessorProperties for the gizmo/current position immediately, and remembered so the next
+   // loadFile()/reload() starts from these values instead of the parser's [0,0,0] default.
+   setWorkplaceOffsets(offsets: { x: number; y: number; z: number }[]) {
+      this.pendingWorkplaceOffsets = offsets
+      this.applyPendingWorkplace()
+   }
+
+   setCurrentWorkplaceIndex(index: number) {
+      this.pendingWorkplaceIndex = index
+      this.applyPendingWorkplace()
+   }
+
+   private applyPendingWorkplace() {
+      if (this.pendingWorkplaceOffsets) {
+         this.processorProperties.workplaceOffsets = this.pendingWorkplaceOffsets.map(
+            (o) => new Vector3(o.x, o.y, o.z),
+         )
+         // Previously never reached the WASM parser - custom workplace offsets were ignored
+         // whenever WASM was enabled, and absolute moves used an all-zero offset table instead
+         this.wasmProcessor?.setWorkplaceOffsets(this.pendingWorkplaceOffsets)
+      }
+      if (this.pendingWorkplaceIndex !== null) {
+         this.processorProperties.currentWorkplaceIdx = this.pendingWorkplaceIndex
+         this.wasmProcessor?.setCurrentWorkplaceIndex(this.pendingWorkplaceIndex)
+      }
+   }
+
+   // Current active workplace offset (Babylon space: x, y=height, z), for a consumer's visibility
+   // gizmo - null if nothing has ever loaded/synced
+   getCurrentWorkplaceOffset(): { x: number; y: number; z: number } | null {
+      const wp = this.processorProperties.currentWorkplace
+      if (!wp) {
+         return null
+      }
+      return { x: wp.x, y: wp.y, z: wp.z }
+   }
+
+   setShowTravels(visible: boolean) {
+      this.showTravels = visible
+      this.modelMaterial.forEach((m) => m.setShowTravels(visible))
+   }
+
+   setPersistTravels(persist: boolean) {
+      this.persistTravels = persist
+      this.modelMaterial.forEach((m) => m.setPersistTravels(persist))
+   }
+
+   // Colors are hex strings like '#0000ff'
+   setFeedColors(minColor: string, maxColor: string) {
+      const min = Color3.FromHexString(minColor.substring(0, 7))
+      const max = Color3.FromHexString(maxColor.substring(0, 7))
+      this.minFeedColor = [min.r, min.g, min.b]
+      this.maxFeedColor = [max.r, max.g, max.b]
+      this.modelMaterial.forEach((m) => {
+         m.setMinFeedColor(this.minFeedColor)
+         m.setMaxFeedColor(this.maxFeedColor)
+      })
+   }
+
+   // Overrides the feed-rate legend's displayed min/max, independent of the file's actual
+   // min/max feed rate (still tracked on processorProperties for loadFile()'s reported result).
+   // Pass null for either bound to fall back to the file's own value.
+   setFeedRateRange(min: number | null, max: number | null) {
+      this.feedRateRangeOverride = min !== null || max !== null ? { min: min ?? 0, max: max ?? 0 } : null
+      this.applyFeedRateRange()
+   }
+
+   private applyFeedRateRange() {
+      const min = this.feedRateRangeOverride?.min ?? this.processorProperties.minFeedRate
+      const max = this.feedRateRangeOverride?.max ?? this.processorProperties.maxFeedRate
+      this.modelMaterial.forEach((m) => {
+         m.setMinFeedRate(min)
+         m.setMaxFeedRate(max)
+      })
+   }
+
+   // Aborts a loadFile() currently in progress - checked between chunks of whichever load loop is
+   // running (loadFileStreamed/loadFileStreamedWithPositions/testRenderSceneProgressive). No-op if
+   // nothing is loading.
+   cancelLoad() {
+      this.cancelRequested = true
+   }
+
+   private checkCancelled() {
+      if (this.cancelRequested) {
+         throw new LoadCancelledError()
+      }
    }
 
    // Color4.FromHexString expects an 8-hex-digit (RRGGBBAA) string; pad with full alpha if the
@@ -219,23 +359,29 @@ export default class Processor {
       }
    }
 
-   private emptyLoadResult(failed: boolean): LoadFileResult {
-      return { start: 0, end: 0, failed, maxHeight: 0, minHeight: 0, maxFeedRate: 0, minFeedRate: 0 }
+   private emptyLoadResult(failed: boolean, cancelled = false): LoadFileResult {
+      return { start: 0, end: 0, failed, cancelled, maxHeight: 0, minHeight: 0, maxFeedRate: 0, minFeedRate: 0 }
    }
 
    async loadFile(file): Promise<LoadFileResult> {
+      this.cancelRequested = false
       try {
          return await this.loadFileInner(file)
       } catch (error) {
+         const cancelled = error instanceof LoadCancelledError
          // A failure partway through must never leave the UI's progress bar/file state stuck on
          // a half-loaded model (see the gpuPicker-crashes-loadFile class of bug). Resolves rather
          // than rejects - a bad/unparseable file is an expected outcome callers check for, not an
-         // exceptional one.
-         console.error('loadFile failed - resetting to an empty, consistent state', error)
+         // exceptional one. A user-requested cancellation is not logged as an error.
+         if (!cancelled) {
+            console.error('loadFile failed - resetting to an empty, consistent state', error)
+         }
          this.worker.postMessage({ type: 'progress', progress: 1, label: 'Processing file' })
-         const result = this.emptyLoadResult(true)
+         const result = this.emptyLoadResult(!cancelled, cancelled)
          this.worker.postMessage({ type: 'fileloaded', ...result })
          return result
+      } finally {
+         this.cancelRequested = false
       }
    }
 
@@ -273,6 +419,8 @@ export default class Processor {
       this.processorProperties.slicer = slicerFactory(file)
       this.applyUserTools()
       this.applyZBelt()
+      this.applyPendingWorkplace()
+      this.applyCncMode()
 
       // Reset processing stats
       const startTime = performance.now()
@@ -346,8 +494,13 @@ export default class Processor {
          }
       }
 
-      this.modelMaterial.forEach((m) => m.setMaxFeedRate(this.processorProperties.maxFeedRate))
-      this.modelMaterial.forEach((m) => m.setMinFeedRate(this.processorProperties.minFeedRate))
+      this.applyFeedRateRange()
+      this.modelMaterial.forEach((m) => {
+         m.setMinFeedColor(this.minFeedColor)
+         m.setMaxFeedColor(this.maxFeedColor)
+         m.setShowTravels(this.showTravels)
+         m.setPersistTravels(this.persistTravels)
+      })
 
       // Empty/unparseable files leave gCodeLines empty - nothing below has a last line to reference
       if (this.gCodeLines.length === 0) {
@@ -376,6 +529,7 @@ export default class Processor {
          start: startByte,
          end: endByte,
          failed: false,
+         cancelled: false,
          maxHeight: this.processorProperties.maxHeight,
          minHeight: this.processorProperties.minHeight,
          maxFeedRate: this.processorProperties.maxFeedRate,
@@ -399,6 +553,7 @@ export default class Processor {
          start: startByte,
          end: endByte,
          failed: false,
+         cancelled: false,
          maxHeight: this.processorProperties.maxHeight,
          minHeight: this.processorProperties.minHeight,
          maxFeedRate: this.processorProperties.maxFeedRate,
@@ -452,8 +607,11 @@ export default class Processor {
             const gcodeLine = ProcessLine(this.processorProperties, line)
             this.gCodeLines.push(gcodeLine)
 
-            // Batch store position data for nozzle tracking
-            if (gcodeLine.lineType === 'L') {
+            // Batch store position data for nozzle tracking. Includes travels ('T'), not just
+            // extruding moves ('L') - matches the WASM/Rust parser, which tracks both; previously
+            // only extruding moves were tracked here, so nozzle scrubbing skipped over travel
+            // moves when WASM was disabled but followed them when it was enabled.
+            if (gcodeLine.lineType === 'L' || gcodeLine.lineType === 'T') {
                const move = gcodeLine as Move
                if (move.end && Array.isArray(move.end) && move.end.length >= 3) {
                   // Expand arrays if we exceed initial estimate
@@ -502,6 +660,7 @@ export default class Processor {
          // Yield control to prevent blocking UI
          if (chunkEnd < lines.length) {
             await new Promise((resolve) => setTimeout(resolve, 0))
+            this.checkCancelled()
          }
       }
 
@@ -529,17 +688,26 @@ export default class Processor {
       try {
          const wasmStartTime = performance.now()
 
-         // Process file with WASM for position extraction and basic analysis
+         // Process file with WASM for position extraction and basic analysis. Returning
+         // this.cancelRequested lets a cancelLoad() call interrupt the parse loop *inside* the
+         // single synchronous WASM call, rather than only being detectable once it returns -
+         // previously cancelLoad() had no way to interrupt WASM parsing itself, however long it ran.
          const result = await this.wasmProcessor!.processFile(file, (progress: number, label: string) => {
             this.worker.postMessage({
                type: 'progress',
                progress: progress,
                label: `WASM: ${label}`,
             })
+            return this.cancelRequested
          })
 
          const wasmEndTime = performance.now()
          this.processingStats.wasmTime = wasmEndTime - wasmStartTime
+
+         if (result.cancelled) {
+            throw new LoadCancelledError()
+         }
+         this.checkCancelled()
 
          if (!result.success) {
             console.warn('❌ WASM processing failed, falling back to TypeScript parser:', result.errorMessage)
@@ -580,7 +748,7 @@ export default class Processor {
          console.log('🚀 Generating render buffers with WASM...')
 
          try {
-            const wasmRenderBuffers = this.wasmProcessor!.generateRenderBuffers(0.4, 0, (progress: number, label: string) => {
+            const wasmRenderBuffers = this.wasmProcessor!.generateRenderBuffers(0.4, 0.2, this.perimeterOnly, (progress: number, label: string) => {
                this.worker.postMessage({
                   type: 'progress',
                   progress: progress,
@@ -594,21 +762,41 @@ export default class Processor {
             this.wasmRenderBuffers = wasmRenderBuffers
             // this.processingStats.wasmRenderTime = renderTime
             this.processingStats.renderSegmentsGenerated = wasmRenderBuffers.segmentCount
+            this.checkCancelled()
 
-            // Still need to create G-code line objects for compatibility with existing code
-            console.log('🔧 Building TypeScript G-code objects for compatibility...')
+            // gCodeLines still needs line-indexed placeholders for GPU-picking readback,
+            // getGCodeInRange and updateByLineNumber - but since WASM already parsed every move
+            // and rendering came straight from its buffers, there's no need to re-run the full
+            // TS G-code parser (arc math, extrusion tracking, tool/workplace state, slicer feature
+            // detection) a second time just to reconstruct real Move/ArcMove objects nothing else
+            // reads. Aggregate stats (height/feed-rate bounds, print bounds, first/last G-code
+            // byte) come directly from the WASM result instead of being recomputed too.
+            console.log('🔧 Building lightweight line index from WASM data...')
             const compatStartTime = performance.now()
 
-            // Reset processor state for TypeScript parsing phase
             this.processorProperties = new ProcessorProperties()
-            this.processorProperties.slicer = slicerFactory(file)
             this.applyUserTools()
-            this.applyZBelt()
+            this.applyPendingWorkplace()
+            this.processorProperties.maxHeight = result.maxHeight
+            this.processorProperties.minHeight = result.minHeight
+            this.processorProperties.maxFeedRate = result.maxFeedRate
+            this.processorProperties.minFeedRate = result.minFeedRate
+            this.processorProperties.firstGCodeByte = result.firstGCodeByte
+            this.processorProperties.lastGCodeByte = result.lastGCodeByte
+            this.processorProperties.printBoundsMinX = result.printBoundsMinX
+            this.processorProperties.printBoundsMinY = result.printBoundsMinY
+            this.processorProperties.printBoundsMinZ = result.printBoundsMinZ
+            this.processorProperties.printBoundsMaxX = result.printBoundsMaxX
+            this.processorProperties.printBoundsMaxY = result.printBoundsMaxY
+            this.processorProperties.printBoundsMaxZ = result.printBoundsMaxZ
 
-            await this.loadFileStreamedWithPositions(file)
+            await this.buildLightweightGCodeLines(file)
             const compatTime = performance.now() - compatStartTime
-            console.log(`🔧 TypeScript compatibility objects created in ${compatTime.toFixed(2)}ms`)
+            console.log(`🔧 Lightweight line index built in ${compatTime.toFixed(2)}ms`)
          } catch (error) {
+            if (error instanceof LoadCancelledError) {
+               throw error
+            }
             console.error('❌ WASM render buffer generation failed:', error)
             console.warn('🔄 Using TypeScript fallback for rendering...')
             // Fallback to TypeScript rendering
@@ -620,6 +808,7 @@ export default class Processor {
             this.processorProperties.slicer = slicerFactory(file)
             this.applyUserTools()
             this.applyZBelt()
+            this.applyCncMode()
 
             await this.loadFileStreamedWithPositions(file)
             this.processingStats.typescriptTime = performance.now() - tsStartTime
@@ -632,10 +821,67 @@ export default class Processor {
             : 0
          console.log(`🎯 Hybrid processing complete - WASM: ${efficiency}%, TypeScript: ${100 - efficiency}%`)
       } catch (error) {
+         if (error instanceof LoadCancelledError) {
+            throw error
+         }
          console.error('💥 WASM processing error, falling back to TypeScript parser:', error)
          this.lastProcessingMethod = 'typescript'
          this.processingStats.method = 'typescript-fallback'
          await this.loadFileStreamed(file)
+      }
+   }
+
+   // Builds gCodeLines[] straight from WASM's already-extracted per-move data (this.positionTracker,
+   // populated by the caller just before this runs) instead of running the file back through the
+   // real G-code parser. A line's presence in positionTracker (keyed by its own file byte
+   // position) is enough to know it's a move and whether it's extruding or a travel - no semantic
+   // parsing needed for the classification itself, and no other IndexEntry field needs one either.
+   private async buildLightweightGCodeLines(file: string) {
+      const chunkSize = 10000
+      const lines = this.streamLines(file)
+      this.gCodeLines = new Array(lines.length)
+
+      this.lastReportedProgress = 0
+      this.lastReportedChunk = 0
+
+      let pos = 0
+      for (let chunkStart = 0; chunkStart < lines.length; chunkStart += chunkSize) {
+         const chunkEnd = Math.min(chunkStart + chunkSize, lines.length)
+
+         for (let idx = chunkStart; idx < chunkEnd; idx++) {
+            const line = lines[idx]
+            this.processorProperties.lineNumber = idx + 1
+            this.processorProperties.filePosition = pos
+            pos += line.length + 1
+
+            const posData = this.positionTracker.get(this.processorProperties.filePosition)
+            let lineType: string
+            if (posData) {
+               lineType = posData.extruding ? 'L' : 'T'
+            } else {
+               const trimmed = line.trim()
+               if (trimmed.length === 0 || trimmed.startsWith(';')) {
+                  lineType = 'C'
+               } else {
+                  const first = trimmed[0].toUpperCase()
+                  lineType = first === 'M' ? 'M' : first === 'G' || first === 'T' ? 'G' : 'C'
+               }
+            }
+
+            this.gCodeLines[idx] = new IndexEntry(this.processorProperties, line, lineType)
+         }
+
+         const progress = chunkEnd / lines.length
+         if (progress - this.lastReportedProgress >= 0.02 || chunkEnd - this.lastReportedChunk >= 50000) {
+            this.worker.postMessage({ type: 'progress', progress: progress, label: 'Building index' })
+            this.lastReportedProgress = progress
+            this.lastReportedChunk = chunkEnd
+         }
+
+         if (chunkEnd < lines.length) {
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            this.checkCancelled()
+         }
       }
    }
 
@@ -699,6 +945,7 @@ export default class Processor {
          // Yield control
          if (chunkEnd < lines.length) {
             await new Promise((resolve) => setTimeout(resolve, 0))
+            this.checkCancelled()
          }
       }
    }
@@ -761,6 +1008,7 @@ export default class Processor {
             // Yield control every few mesh generations
             if (alphaIndex % 5 === 0) {
                await new Promise((resolve) => setTimeout(resolve, 0))
+               this.checkCancelled()
             }
          }
       }

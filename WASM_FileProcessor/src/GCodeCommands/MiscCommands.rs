@@ -1,5 +1,5 @@
 use crate::gcode_line::{GCodeLine, CommandData, MCodeData};
-use crate::processor_properties::ProcessorProperties;
+use crate::processor_properties::{ProcessorProperties, WorkplaceOffset};
 
 /// Parse workplace coordinate system commands (G54-G59.3)
 /// G54-G59: Select coordinate system 1-6
@@ -26,10 +26,14 @@ pub fn parse_workplace_coordinates(
         _ => return Err(format!("Unknown workplace command: {}", command)),
     };
     
-    // Update current workplace if valid index
-    if workspace_idx < properties.workplace_offsets.len() {
-        properties.current_workplace_idx = workspace_idx as u8;
+    // G59.1-G59.3 (indices 6-8) exceed the 6 slots ProcessorProperties::new() pre-allocates for
+    // G54-G59 - grow the table rather than silently dropping the switch, matching the TypeScript
+    // parser's workplace.ts (which pushes new Vector3(0,0,0) entries until the index fits)
+    while properties.workplace_offsets.len() <= workspace_idx {
+        let next_idx = properties.workplace_offsets.len() as u8;
+        properties.workplace_offsets.push(WorkplaceOffset::new(next_idx));
     }
+    properties.current_workplace_idx = workspace_idx as u8;
     
     // Create command data
     let cmd_data = CommandData::new(

@@ -43,6 +43,10 @@ export default class Viewer {
    viewBox: ViewBox | null = null
    bed: Bed | null = null
    axes: Axes | null = null
+   // Small axis-cross marking the active workplace's (G54-G59.3) origin - reuses the Axes
+   // renderable at a smaller size rather than a bespoke mesh, since "an axis cross at a position"
+   // is exactly what a workplace-offset gizmo needs
+   workplaceGizmo: Axes | null = null
    buildObjects: BuildObjects | null = null
    zTopClipValue: number | null = null
    zBottomClipValue: number | null = null
@@ -190,6 +194,15 @@ export default class Viewer {
          this.registerClipIgnore(mesh)
       }
       this.axes.render()
+
+      this.workplaceGizmo = new Axes(this.scene)
+      this.workplaceGizmo.size = 15
+      this.workplaceGizmo.registerClipIgnore = (mesh) => {
+         this.registerClipIgnore(mesh)
+      }
+      this.workplaceGizmo.render()
+      this.workplaceGizmo.show(false) // Hidden until showWorkplace(true) is called
+      this.updateWorkplaceGizmoPosition()
 
       this.buildObjects = new BuildObjects(this.scene)
       this.buildObjects.getMaxHeight = () => {
@@ -505,6 +518,12 @@ export default class Viewer {
       this.processor.setZBelt(enabled, angle)
    }
 
+   // CNC mode (treat every G1 as an extrusion) is also a parse-time setting - call reload()
+   // afterwards, same as setZBelt
+   setG1AsExtrusion(enabled: boolean) {
+      this.processor.setG1AsExtrusion(enabled)
+   }
+
    setCameraInertia(enabled: boolean) {
       if (this.orbitCamera) {
          this.orbitCamera.inertia = enabled ? 0.9 : 0
@@ -560,6 +579,54 @@ export default class Viewer {
       this.axes?.show(visible)
    }
 
+   showWorkplace(visible: boolean) {
+      this.workplaceGizmo?.show(visible)
+   }
+
+   // G-code (x, y, z) -> Babylon (x, z, y), matching Axes/Bed's own coordinate convention
+   private updateWorkplaceGizmoPosition() {
+      const offset = this.processor.getCurrentWorkplaceOffset()
+      if (!this.workplaceGizmo || !offset) {
+         return
+      }
+      this.workplaceGizmo.render(new Vector3(offset.x, offset.z, offset.y))
+      this.scene?.render(true)
+   }
+
+   setWorkplaceOffsets(offsets: { x: number; y: number; z: number }[]) {
+      this.processor.setWorkplaceOffsets(offsets)
+      this.updateWorkplaceGizmoPosition()
+   }
+
+   setCurrentWorkplaceIndex(index: number) {
+      this.processor.setCurrentWorkplaceIndex(index)
+      this.updateWorkplaceGizmoPosition()
+   }
+
+   setNozzlePosition(position: { x: number; y: number; z: number }) {
+      this.processor.setNozzlePosition(position)
+   }
+
+   setShowTravels(visible: boolean) {
+      this.processor.setShowTravels(visible)
+   }
+
+   setPersistTravels(persist: boolean) {
+      this.processor.setPersistTravels(persist)
+   }
+
+   setFeedColors(minColor: string, maxColor: string) {
+      this.processor.setFeedColors(minColor, maxColor)
+   }
+
+   setFeedRateRange(min: number | null, max: number | null) {
+      this.processor.setFeedRateRange(min, max)
+   }
+
+   cancelLoad() {
+      this.processor.cancelLoad()
+   }
+
    loadObjectBoundaries(objects: any[]) {
       this.buildObjects?.loadObjectBoundaries(objects)
    }
@@ -601,11 +668,15 @@ export default class Viewer {
    }
 
    async loadFile(file) {
-      return await this.processor.loadFile(file)
+      const result = await this.processor.loadFile(file)
+      this.updateWorkplaceGizmoPosition()
+      return result
    }
 
    async reload() {
-      return await this.processor.reload()
+      const result = await this.processor.reload()
+      this.updateWorkplaceGizmoPosition()
+      return result
    }
 
    clear() {

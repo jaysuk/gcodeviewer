@@ -1,24 +1,4 @@
 use crate::gcode_line::Color4;
-use std::hash::Hash;
-
-/// Feature types that slicers can identify
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum FeatureType {
-    Perimeter,
-    ExternalPerimeter,
-    InternalPerimeter,
-    Infill,
-    SolidInfill,
-    TopSolidInfill,
-    Support,
-    SupportInterface,
-    BridgeInfill,
-    GapFill,
-    Skirt,
-    Brim,
-    WipeTower,
-    Unknown,
-}
 
 /// Layer information
 #[derive(Debug, Clone)]
@@ -28,54 +8,84 @@ pub struct LayerInfo {
     pub z_position: f64,
 }
 
-/// Base trait for slicer-specific behavior
+/// Current feature-coloring state, mirroring TypeScript's SlicerBase instance fields exactly
+/// (src/GCodeParsers/slicerbase.ts: currentFeatureColor/currentIsPerimeter/currentIsSupport).
+/// Every slicer shares these defaults - white, perimeter=true, support=false - which matter: this
+/// is what a file renders with *before* its first `;TYPE:` comment, not "Perimeter" as an earlier
+/// version of the Rust port assumed.
+#[derive(Clone, Debug)]
+pub struct FeatureState {
+    pub color: Color4,
+    pub is_perimeter: bool,
+    pub is_support: bool,
+}
+
+impl Default for FeatureState {
+    fn default() -> Self {
+        Self {
+            color: Color4::white(),
+            is_perimeter: true,
+            is_support: false,
+        }
+    }
+}
+
+/// Base trait for slicer-specific behavior - mirrors TypeScript's SlicerBase
+/// (src/GCodeParsers/slicerbase.ts) exactly: `process_comment` is stateful (updates
+/// color/is_perimeter/is_support in place), and the getters read back that state rather than
+/// re-parsing the comment on every call.
 pub trait SlicerBase {
-    fn get_feature_color(&self, feature: &FeatureType) -> Color4;
-    fn parse_feature_from_comment(&self, comment: &str) -> Option<FeatureType>;
+    /// Process a `;TYPE:` comment and update feature-coloring state (mirrors TS processComment)
+    fn process_comment(&mut self, comment: &str);
+    fn is_perimeter(&self) -> bool;
+    fn is_support(&self) -> bool;
+    fn get_feature_color(&self) -> Color4;
     fn parse_layer_info(&self, comment: &str) -> Option<LayerInfo>;
-    fn is_perimeter_comment(&self, comment: &str) -> bool;
-    fn is_support_comment(&self, comment: &str) -> bool;
     fn get_temperature_from_comment(&self, comment: &str) -> Option<f64>;
-    fn detect_slicer(file_content: &str) -> bool where Self: Sized;
+    fn detect_slicer(file_content: &str) -> bool
+    where
+        Self: Sized;
     fn get_name(&self) -> &str;
     fn get_version_info(&self, file_content: &str) -> Option<String>;
 }
 
-/// Detect slicer type from file content
+/// Detect slicer type from file content - order and patterns match TypeScript's
+/// slicerFactory.ts SLICER_PATTERNS exactly: PrusaSlicer, Cura, SuperSlicer, ideaMaker, Kiri:Moto,
+/// OrcaSlicer, then Generic as the fallback.
 pub fn detect_slicer(file_content: &str) -> Box<dyn SlicerBase> {
-    use crate::slicers::PrusaSlicer::PrusaSlicer;
     use crate::slicers::CuraSlicer::CuraSlicer;
-    use crate::slicers::SuperSlicer::SuperSlicer;
-    use crate::slicers::OrcaSlicer::OrcaSlicer;
     use crate::slicers::GenericSlicer::GenericSlicer;
-    
-    // Check first few KB for slicer signatures
+    use crate::slicers::IdeaMakerSlicer::IdeaMakerSlicer;
+    use crate::slicers::KiriMotoSlicer::KiriMotoSlicer;
+    use crate::slicers::OrcaSlicer::OrcaSlicer;
+    use crate::slicers::PrusaSlicer::PrusaSlicer;
+    use crate::slicers::SuperSlicer::SuperSlicer;
+
+    // Check first few KB for slicer signatures, matching TS's slicerFactory.ts substring window
     let header = if file_content.len() > 10000 {
         &file_content[..10000]
     } else {
         file_content
     };
-    
-    // PrusaSlicer detection
+
     if PrusaSlicer::detect_slicer(header) {
         return Box::new(PrusaSlicer::new());
     }
-    
-    // Cura detection
     if CuraSlicer::detect_slicer(header) {
         return Box::new(CuraSlicer::new());
     }
-    
-    // SuperSlicer detection
     if SuperSlicer::detect_slicer(header) {
         return Box::new(SuperSlicer::new());
     }
-    
-    // OrcaSlicer detection
+    if IdeaMakerSlicer::detect_slicer(header) {
+        return Box::new(IdeaMakerSlicer::new());
+    }
+    if KiriMotoSlicer::detect_slicer(header) {
+        return Box::new(KiriMotoSlicer::new());
+    }
     if OrcaSlicer::detect_slicer(header) {
         return Box::new(OrcaSlicer::new());
     }
-    
-    // Default to generic slicer
+
     Box::new(GenericSlicer::new())
 }

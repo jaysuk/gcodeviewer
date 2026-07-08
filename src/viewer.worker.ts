@@ -146,6 +146,9 @@ self.addEventListener('message', async (message) => {
       case 'setZBelt':
          self.viewer.setZBelt(message.data.enabled, message.data.angle)
          break
+      case 'setG1AsExtrusion':
+         self.viewer.setG1AsExtrusion(message.data.enabled)
+         break
       case 'setCameraInertia':
          self.viewer.setCameraInertia(message.data.enabled)
          break
@@ -172,6 +175,33 @@ self.addEventListener('message', async (message) => {
          break
       case 'showAxes':
          self.viewer.showAxes(message.data.visible)
+         break
+      case 'showWorkplace':
+         self.viewer.showWorkplace(message.data.visible)
+         break
+      case 'setWorkplaceOffsets':
+         self.viewer.setWorkplaceOffsets(message.data.offsets)
+         break
+      case 'setCurrentWorkplaceIndex':
+         self.viewer.setCurrentWorkplaceIndex(message.data.index)
+         break
+      case 'setNozzlePosition':
+         self.viewer.setNozzlePosition(message.data.position)
+         break
+      case 'setShowTravels':
+         self.viewer.setShowTravels(message.data.visible)
+         break
+      case 'setPersistTravels':
+         self.viewer.setPersistTravels(message.data.persist)
+         break
+      case 'setFeedColors':
+         self.viewer.setFeedColors(message.data.minColor, message.data.maxColor)
+         break
+      case 'setFeedRateRange':
+         self.viewer.setFeedRateRange(message.data.min, message.data.max)
+         break
+      case 'cancelLoad':
+         self.viewer.cancelLoad()
          break
       case 'loadObjectBoundaries':
          self.viewer.loadObjectBoundaries(message.data.objects)

@@ -1,93 +1,97 @@
-use crate::slicers::{SlicerBase, FeatureType, LayerInfo};
 use crate::gcode_line::Color4;
+use crate::slicers::{FeatureState, LayerInfo, SlicerBase};
+
+/// (key, color, is_perimeter, is_support) - transcribed verbatim from
+/// src/GCodeParsers/superslicer.ts. Uses the same Prusa-style color palette but *different*
+/// perimeter/support flags than PrusaSlicer (PERIMETER is false here, true there; TOP SOLID
+/// INFILL is true here, false there; SUPPORT MATERIAL is false here, true there) - these are not
+/// copy-paste mistakes, the TS source really does differ slicer-to-slicer. Exact-string lookup,
+/// no normalization heuristics (unlike PrusaSlicer.rs).
+const FEATURES: &[(&str, [f64; 4], bool, bool)] = &[
+    ("PERIMETER", [1.0, 0.9, 0.3, 1.0], false, false),
+    ("EXTERNAL PERIMETER", [1.0, 0.5, 0.2, 1.0], true, false),
+    ("INTERNAL INFILL", [0.59, 0.19, 0.16, 1.0], false, false),
+    ("SOLID INFILL", [0.59, 0.19, 0.8, 1.0], false, false),
+    ("TOP SOLID INFILL", [0.95, 0.25, 0.25, 1.0], true, false),
+    ("BRIDGE INFILL", [0.3, 0.5, 0.73, 1.0], false, false),
+    ("GAP FILL", [1.0, 1.0, 1.0, 1.0], false, false),
+    ("SKIRT", [0.0, 0.53, 0.43, 1.0], false, false),
+    ("SKIRT/BRIM", [0.0, 0.53, 0.43, 1.0], false, false),
+    ("SUPPORTED MATERIAL", [0.0, 1.0, 0.0, 1.0], false, true),
+    ("SUPPORTED MATERIAL INTERFACE", [0.0, 0.5, 0.0, 1.0], false, true),
+    ("CUSTOM", [0.5, 0.5, 0.5, 1.0], false, false),
+    ("UNKNOWN", [0.5, 0.5, 0.5, 1.0], false, false),
+    ("SUPPORT MATERIAL", [0.5, 0.5, 0.5, 1.0], false, false),
+    ("SUPPORT MATERIAL INTERFACE", [0.5, 0.5, 0.5, 1.0], false, false),
+    ("OVERHANG PERIMETER", [0.5, 0.5, 0.5, 1.0], true, false),
+    ("WIPE TOWER", [0.5, 0.5, 0.5, 1.0], false, false),
+];
 
 pub struct SuperSlicer {
     name: String,
+    state: FeatureState,
 }
 
 impl SuperSlicer {
     pub fn new() -> Self {
         Self {
             name: "SuperSlicer".to_string(),
+            state: FeatureState::default(),
         }
     }
 }
 
 impl SlicerBase for SuperSlicer {
-    fn get_feature_color(&self, feature: &FeatureType) -> Color4 {
-        match feature {
-            FeatureType::ExternalPerimeter => Color4::new(0.6, 1.0, 0.0, 1.0), // Lime green
-            FeatureType::Perimeter | FeatureType::InternalPerimeter => Color4::new(0.8, 1.0, 0.0, 1.0), // Yellow-green
-            FeatureType::Infill => Color4::new(0.0, 0.8, 0.4, 1.0), // Green
-            FeatureType::SolidInfill | FeatureType::TopSolidInfill => Color4::new(0.0, 1.0, 0.6, 1.0), // Bright green
-            FeatureType::Support => Color4::new(0.4, 0.4, 1.0, 1.0), // Blue
-            FeatureType::SupportInterface => Color4::new(0.6, 0.6, 1.0, 1.0), // Light blue
-            FeatureType::BridgeInfill => Color4::new(1.0, 0.8, 0.0, 1.0), // Gold
-            FeatureType::GapFill => Color4::new(1.0, 1.0, 0.4, 1.0), // Light yellow
-            _ => Color4::new(1.0, 1.0, 1.0, 1.0), // White
-        }
-    }
-    
-    fn parse_feature_from_comment(&self, comment: &str) -> Option<FeatureType> {
-        // SuperSlicer uses PrusaSlicer-like comments
-        let comment_lower = comment.to_lowercase();
-        
-        if comment_lower.contains("external perimeter") {
-            Some(FeatureType::ExternalPerimeter)
-        } else if comment_lower.contains("perimeter") {
-            Some(FeatureType::Perimeter)
-        } else if comment_lower.contains("solid infill") {
-            Some(FeatureType::SolidInfill)
-        } else if comment_lower.contains("top solid infill") {
-            Some(FeatureType::TopSolidInfill)
-        } else if comment_lower.contains("infill") {
-            Some(FeatureType::Infill)
-        } else if comment_lower.contains("support interface") {
-            Some(FeatureType::SupportInterface)
-        } else if comment_lower.contains("support") {
-            Some(FeatureType::Support)
-        } else if comment_lower.contains("bridge") {
-            Some(FeatureType::BridgeInfill)
-        } else if comment_lower.contains("gap fill") {
-            Some(FeatureType::GapFill)
+    fn process_comment(&mut self, comment: &str) {
+        let Some(feature_raw) = comment.strip_prefix(";TYPE:") else {
+            return;
+        };
+        let key = feature_raw.trim();
+        if let Some(&(_, color, is_perimeter, is_support)) = FEATURES.iter().find(|(k, ..)| *k == key) {
+            self.state.color = Color4::new(color[0], color[1], color[2], color[3]);
+            self.state.is_perimeter = is_perimeter;
+            self.state.is_support = is_support;
         } else {
-            None
+            self.state.color = Color4::white();
+            self.state.is_perimeter = true;
+            self.state.is_support = false;
         }
     }
-    
+
+    fn is_perimeter(&self) -> bool {
+        self.state.is_perimeter
+    }
+
+    fn is_support(&self) -> bool {
+        self.state.is_support
+    }
+
+    fn get_feature_color(&self) -> Color4 {
+        self.state.color.clone()
+    }
+
     fn parse_layer_info(&self, comment: &str) -> Option<LayerInfo> {
-        // SuperSlicer uses similar format to PrusaSlicer
         if comment.contains("LAYER_CHANGE") || comment.starts_with("; Z:") {
             if let Some(z_start) = comment.find("; Z:") {
                 let z_line = &comment[z_start + 4..];
-                if let Some(z_end) = z_line.find('\n').or_else(|| Some(z_line.len())) {
-                    let z_str = z_line[..z_end].trim();
-                    if let Ok(z_pos) = z_str.parse::<f64>() {
-                        return Some(LayerInfo {
-                            layer_number: 0, // Could be extracted if available
-                            layer_height: 0.2,
-                            z_position: z_pos,
-                        });
-                    }
+                let z_end = z_line.find('\n').unwrap_or(z_line.len());
+                let z_str = z_line[..z_end].trim();
+                if let Ok(z_pos) = z_str.parse::<f64>() {
+                    return Some(LayerInfo {
+                        layer_number: 0,
+                        layer_height: 0.2,
+                        z_position: z_pos,
+                    });
                 }
             }
         }
         None
     }
-    
-    fn is_perimeter_comment(&self, comment: &str) -> bool {
-        comment.to_lowercase().contains("perimeter")
-    }
-    
-    fn is_support_comment(&self, comment: &str) -> bool {
-        comment.to_lowercase().contains("support")
-    }
-    
+
     fn get_temperature_from_comment(&self, comment: &str) -> Option<f64> {
-        // Similar to PrusaSlicer temperature parsing
         if comment.contains("temperature") {
             if let Some(temp_start) = comment.find("temperature") {
-                let temp_substr = &comment[temp_start..]; 
+                let temp_substr = &comment[temp_start..];
                 for word in temp_substr.split_whitespace() {
                     if let Ok(temp) = word.trim_matches(&[';', '°', 'C', '=', ':'][..]).parse::<f64>() {
                         if temp > 0.0 && temp < 500.0 {
@@ -99,21 +103,23 @@ impl SlicerBase for SuperSlicer {
         }
         None
     }
-    
-    fn detect_slicer(file_content: &str) -> bool where Self: Sized {
+
+    fn detect_slicer(file_content: &str) -> bool
+    where
+        Self: Sized,
+    {
         file_content.contains("; generated by SuperSlicer")
     }
-    
+
     fn get_name(&self) -> &str {
         &self.name
     }
-    
+
     fn get_version_info(&self, file_content: &str) -> Option<String> {
         if let Some(start) = file_content.find("; generated by SuperSlicer ") {
             let version_line = &file_content[start + 28..];
-            if let Some(end) = version_line.find(" on ").or_else(|| version_line.find('\n')) {
-                return Some(version_line[..end].trim().to_string());
-            }
+            let end = version_line.find(" on ").or_else(|| version_line.find('\n')).unwrap_or(version_line.len());
+            return Some(version_line[..end].trim().to_string());
         }
         None
     }

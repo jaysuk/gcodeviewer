@@ -72,7 +72,17 @@ pub struct ProcessorProperties {
     // Height tracking
     pub max_height: f64,
     pub min_height: f64,
-    
+
+    // Bounding box (Babylon space: x, y=height, z) over EXTRUDING moves only - mirrors the
+    // TypeScript parser's printBoundsMin/Max*, needed so the WASM path can skip TS re-parsing the
+    // whole file just to get camera-framing bounds
+    pub print_bounds_min_x: f64,
+    pub print_bounds_min_y: f64,
+    pub print_bounds_min_z: f64,
+    pub print_bounds_max_x: f64,
+    pub print_bounds_max_y: f64,
+    pub print_bounds_max_z: f64,
+
     // File tracking
     pub line_count: u32,
     pub file_position: u32,
@@ -161,6 +171,12 @@ impl ProcessorProperties {
         Self {
             max_height: 0.0,
             min_height: 0.0,
+            print_bounds_min_x: f64::INFINITY,
+            print_bounds_min_y: f64::INFINITY,
+            print_bounds_min_z: f64::INFINITY,
+            print_bounds_max_x: f64::NEG_INFINITY,
+            print_bounds_max_y: f64::NEG_INFINITY,
+            print_bounds_max_z: f64::NEG_INFINITY,
             line_count: 0,
             file_position: 0,
             line_number: 0,
@@ -205,9 +221,12 @@ impl ProcessorProperties {
             slicer_name: "Unknown".to_string(),
             slicer_version: "Unknown".to_string(),
             
-            // Initialize with default feature colors (white)
+            // Default feature-coloring state - matches TypeScript's SlicerBase defaults exactly
+            // (src/GCodeParsers/slicerbase.ts: currentFeatureColor=[1,1,1,1], currentIsPerimeter
+            // =true, currentIsSupport=false), i.e. what a file renders with before its first
+            // `;TYPE:` comment.
             current_feature_color: Color4::white(),
-            current_is_perimeter: false,
+            current_is_perimeter: true,
             current_is_support: false,
         }
     }
@@ -267,7 +286,18 @@ impl ProcessorProperties {
             self.min_height = z;
         }
     }
-    
+
+    // Only called for extruding moves - see print_bounds_min/max above. Mirrors the TypeScript
+    // parser's updatePrintBounds() exactly.
+    pub fn update_print_bounds(&mut self, x: f64, y: f64, z: f64) {
+        if x < self.print_bounds_min_x { self.print_bounds_min_x = x; }
+        if x > self.print_bounds_max_x { self.print_bounds_max_x = x; }
+        if y < self.print_bounds_min_y { self.print_bounds_min_y = y; }
+        if y > self.print_bounds_max_y { self.print_bounds_max_y = y; }
+        if z < self.print_bounds_min_z { self.print_bounds_min_z = z; }
+        if z > self.print_bounds_max_z { self.print_bounds_max_z = z; }
+    }
+
     // Set workspace by G-code (G54, G55, etc.)
     pub fn set_workspace(&mut self, gcode: &str) {
         match gcode {
@@ -310,6 +340,12 @@ impl ProcessorProperties {
         self.total_rendered_segments = 0;
         self.max_height = 0.0;
         self.min_height = 0.0;
+        self.print_bounds_min_x = f64::INFINITY;
+        self.print_bounds_min_y = f64::INFINITY;
+        self.print_bounds_min_z = f64::INFINITY;
+        self.print_bounds_max_x = f64::NEG_INFINITY;
+        self.print_bounds_max_y = f64::NEG_INFINITY;
+        self.print_bounds_max_z = f64::NEG_INFINITY;
         self.max_feed_rate = 1.0;
         self.min_feed_rate = 999999999.0;
         self.current_z = 0.0;
@@ -317,14 +353,22 @@ impl ProcessorProperties {
         self.target_bed_temp = 0.0;
         self.current_hotend_temp = 0.0;
         self.current_bed_temp = 0.0;
-        
+
         // Reset tool to default
         if !self.tools.is_empty() {
             self.current_tool = self.tools[0].clone();
         }
-        
+
         // Reset workspace to default
         self.current_workplace_idx = 0;
+
+        // Reset feature-coloring state - without this, loading a second file into the same
+        // FileProcessor instance inherited the first file's last `;TYPE:` comment's color/flags
+        // as its starting state instead of the clean SlicerBase defaults TypeScript always gets
+        // (it constructs a fresh ProcessorProperties per load; this one is reused across loads)
+        self.current_feature_color = Color4::white();
+        self.current_is_perimeter = true;
+        self.current_is_support = false;
     }
     
     // Get units multiplier for conversion

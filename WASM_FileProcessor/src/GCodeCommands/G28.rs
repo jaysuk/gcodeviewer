@@ -71,7 +71,7 @@ pub fn parse_g28_home(
     // If no specific axes mentioned, home all axes
     if !has_parameters {
         home_x = true;
-        home_y = true;  
+        home_y = true;
         home_z = true;
         home_e = true;
         parameters.push(("X".to_string(), 0.0));
@@ -79,21 +79,13 @@ pub fn parse_g28_home(
         parameters.push(("Z".to_string(), 0.0));
         parameters.push(("E".to_string(), 0.0));
     }
-    
-    // Update processor state - homing resets positions to 0
-    if home_x {
-        properties.current_position.x = 0.0;
-    }
-    if home_y {
-        properties.current_position.y = 0.0;
-    }
-    if home_z {
-        properties.current_position.z = 0.0;
-    }
-    if home_e {
-        properties.current_e = 0.0;
-    }
-    
+    let _ = (home_x, home_y, home_z, home_e); // kept for the informational `parameters` list below
+
+    // Does NOT reset current_position/current_e - matches TS's g28.ts exactly, which parses G28
+    // into a plain Command with no state changes at all. An earlier version of this port zeroed
+    // out whichever axes were named, which the TS reference implementation never did (the actual
+    // physical home position isn't 0,0,0 in machine/workplace-offset terms anyway).
+
     // Create command data
     let mut cmd_data = CommandData::new(file_position, line_number, line.to_string(), "G28".to_string());
     cmd_data.parameters = parameters;
@@ -119,36 +111,41 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_parse_g28_home_all() {
+    fn test_parse_g28_does_not_move_position() {
+        // Matches TS's g28.ts exactly - G28 parses into a plain Command, current_position and
+        // current_e are left completely untouched (the physical home position isn't 0,0,0 in
+        // machine/workplace-offset terms anyway, so zeroing it out was never correct).
         let mut props = ProcessorProperties::new();
         props.current_position.x = 100.0;
         props.current_position.y = 50.0;
         props.current_position.z = 10.0;
         props.current_e = 5.0;
-        
+
         let result = parse_g28_home(&mut props, "G28", 100, 1);
         assert!(result.is_ok());
-        
-        // All positions should be reset to 0
-        assert_eq!(props.current_position.x, 0.0);
-        assert_eq!(props.current_position.y, 0.0);
-        assert_eq!(props.current_position.z, 0.0);
-        assert_eq!(props.current_e, 0.0);
+
+        assert_eq!(props.current_position.x, 100.0);
+        assert_eq!(props.current_position.y, 50.0);
+        assert_eq!(props.current_position.z, 10.0);
+        assert_eq!(props.current_e, 5.0);
+
+        if let Ok(GCodeLine::Command(cmd)) = result {
+            assert_eq!(cmd.command_type, "G28");
+        }
     }
-    
+
     #[test]
-    fn test_parse_g28_home_specific() {
+    fn test_parse_g28_with_axis_params_still_does_not_move_position() {
         let mut props = ProcessorProperties::new();
         props.current_position.x = 100.0;
         props.current_position.y = 50.0;
         props.current_position.z = 10.0;
-        
+
         let result = parse_g28_home(&mut props, "G28 X Z", 200, 2);
         assert!(result.is_ok());
-        
-        // Only X and Z should be homed
-        assert_eq!(props.current_position.x, 0.0);
-        assert_eq!(props.current_position.y, 50.0); // Unchanged
-        assert_eq!(props.current_position.z, 0.0);
+
+        assert_eq!(props.current_position.x, 100.0);
+        assert_eq!(props.current_position.y, 50.0);
+        assert_eq!(props.current_position.z, 10.0);
     }
 }

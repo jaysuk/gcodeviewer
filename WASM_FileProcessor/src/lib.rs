@@ -19,29 +19,50 @@ pub use gcode_line::*;
 pub use processor_properties::*;
 pub use processor::*;
 
-// Set up panic hook and allocator for WASM
-#[cfg(feature = "wee_alloc")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
 #[wasm_bindgen(start)]
 pub fn main() {
     console_error_panic_hook::set_once();
     web_sys::console::log_1(&"G-code WASM processor initialized".into());
 }
 
-// JavaScript-friendly progress callback
+// Progress callbacks are plain JS functions (e.g. `(progress, label) => {...}`), not objects with a
+// custom "call" method - js_sys::Function is the correct wasm-bindgen type for that. An earlier
+// version bound a custom `ProgressCallback` type with a `#[wasm_bindgen(method, js_name = call)]`
+// method, which looked plausible but was wrong: every JS Function already has a *native*
+// `Function.prototype.call(thisArg, ...args)`, so invoking it that way silently called the native
+// method instead of the callback itself - the label argument was dropped, the progress argument
+// received the label string, and the callback's `this` was set to the progress number.
+pub type ProgressCallback = js_sys::Function;
+
+// Invokes a progress callback as a plain function call (see the ProgressCallback comment above).
+// Errors (the callback throwing) are swallowed - a progress UI update failing shouldn't abort
+// parsing. Returns true if the callback's return value is `true` - the JS side's progress
+// callback returns its own cancelRequested flag, which is how a cancelLoad() call (previously
+// only ever checked between JS-side chunk boundaries, so it couldn't interrupt a single
+// synchronous WASM call no matter how long it ran) can actually interrupt an in-progress parse.
+pub fn call_progress(callback: &ProgressCallback, progress: f64, label: &str) -> bool {
+    callback
+        .call2(
+            &wasm_bindgen::JsValue::NULL,
+            &wasm_bindgen::JsValue::from_f64(progress),
+            &wasm_bindgen::JsValue::from_str(label),
+        )
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+// console.log only binds inside a real wasm host - see processor.rs's matching fallback for why
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
-    
-    // Progress callback function type
-    #[wasm_bindgen]
-    pub type ProgressCallback;
-    
-    #[wasm_bindgen(method, js_name = call)]
-    pub fn call(this: &ProgressCallback, progress: f64, label: &str);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn log(s: &str) {
+    println!("{}", s);
 }
 
 // Macro for easier console logging
@@ -55,9 +76,27 @@ macro_rules! console_log {
 pub struct ProcessingResult {
     success: bool,
     error_message: String,
+    // True when the load was aborted via cancelLoad() rather than failing on its own - distinct
+    // from `success: false` so a consumer doesn't surface a user-initiated cancel as an error,
+    // mirroring the existing `cancelled` flag on LoadFileResult (src/processor.ts)
+    cancelled: bool,
     line_count: usize,
     move_count: usize,
     processing_time_ms: f64,
+    // Aggregate stats computed during parsing - exposed here so a consumer (see processor.ts's
+    // loadFileWithWasm) can skip a second full TS re-parse of the file just to recompute them
+    max_height: f64,
+    min_height: f64,
+    max_feed_rate: f64,
+    min_feed_rate: f64,
+    first_gcode_byte: u32,
+    last_gcode_byte: u32,
+    print_bounds_min_x: f64,
+    print_bounds_min_y: f64,
+    print_bounds_min_z: f64,
+    print_bounds_max_x: f64,
+    print_bounds_max_y: f64,
+    print_bounds_max_z: f64,
 }
 
 #[wasm_bindgen]
@@ -77,31 +116,87 @@ impl ProcessingResult {
         !self.error_message.is_empty()
     }
     
+    #[wasm_bindgen(getter)]
+    pub fn cancelled(&self) -> bool {
+        self.cancelled
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new(success: bool, error_message: String, line_count: usize, move_count: usize, processing_time_ms: f64) -> ProcessingResult {
         ProcessingResult {
             success,
             error_message,
+            cancelled: false,
             line_count,
             move_count,
             processing_time_ms,
+            max_height: 0.0,
+            min_height: 0.0,
+            max_feed_rate: 0.0,
+            min_feed_rate: 0.0,
+            first_gcode_byte: 0,
+            last_gcode_byte: 0,
+            print_bounds_min_x: f64::INFINITY,
+            print_bounds_min_y: f64::INFINITY,
+            print_bounds_min_z: f64::INFINITY,
+            print_bounds_max_x: f64::NEG_INFINITY,
+            print_bounds_max_y: f64::NEG_INFINITY,
+            print_bounds_max_z: f64::NEG_INFINITY,
         }
     }
-    
+
     #[wasm_bindgen(getter)]
     pub fn line_count(&self) -> usize {
         self.line_count
     }
-    
+
     #[wasm_bindgen(getter)]
     pub fn move_count(&self) -> usize {
         self.move_count
     }
-    
+
     #[wasm_bindgen(getter)]
     pub fn processing_time_ms(&self) -> f64 {
         self.processing_time_ms
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn max_height(&self) -> f64 { self.max_height }
+
+    #[wasm_bindgen(getter)]
+    pub fn min_height(&self) -> f64 { self.min_height }
+
+    #[wasm_bindgen(getter)]
+    pub fn max_feed_rate(&self) -> f64 { self.max_feed_rate }
+
+    #[wasm_bindgen(getter)]
+    pub fn min_feed_rate(&self) -> f64 { self.min_feed_rate }
+
+    #[wasm_bindgen(getter)]
+    pub fn first_gcode_byte(&self) -> u32 { self.first_gcode_byte }
+
+    #[wasm_bindgen(getter)]
+    pub fn last_gcode_byte(&self) -> u32 { self.last_gcode_byte }
+
+    // Bounding box (Babylon space: x, y=height, z) over extruding moves - min > max on whichever
+    // axis (or the raw +/-Infinity sentinels) means nothing extruding was ever parsed
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_min_x(&self) -> f64 { self.print_bounds_min_x }
+
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_min_y(&self) -> f64 { self.print_bounds_min_y }
+
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_min_z(&self) -> f64 { self.print_bounds_min_z }
+
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_max_x(&self) -> f64 { self.print_bounds_max_x }
+
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_max_y(&self) -> f64 { self.print_bounds_max_y }
+
+    #[wasm_bindgen(getter)]
+    pub fn print_bounds_max_z(&self) -> f64 { self.print_bounds_max_z }
 }
 
 // Render buffer data for fast mesh generation
@@ -310,10 +405,62 @@ impl GCodeProcessor {
             sorted_positions: Vec::new(),
         }
     }
-    
+
+    /// Belt-printer kinematics (gantry angle in degrees) - a parse-time setting, previously never
+    /// reached the WASM parser at all, so belt files parsed with standard kinematics whenever
+    /// WASM was enabled. Sticky across loads (see FileProcessor::apply_pending_settings).
+    #[wasm_bindgen]
+    pub fn set_z_belt(&mut self, enabled: bool, gantry_angle_degrees: f64) {
+        self.processor.set_z_belt(enabled, gantry_angle_degrees);
+    }
+
+    /// Workplace offset table (G54-G59.3), as a flat [x0,y0,z0, x1,y1,z1, ...] array in gcode
+    /// space (matching ProcessorProperties.workplace_offsets' own convention - not Babylon-swapped)
+    #[wasm_bindgen]
+    pub fn set_workplace_offsets(&mut self, flat_offsets: Vec<f64>) {
+        let mut offsets = Vec::with_capacity(flat_offsets.len() / 3);
+        let mut idx = 0;
+        while idx + 2 < flat_offsets.len() {
+            offsets.push(crate::gcode_line::Vector3 {
+                x: flat_offsets[idx],
+                y: flat_offsets[idx + 1],
+                z: flat_offsets[idx + 2],
+            });
+            idx += 3;
+        }
+        self.processor.set_workplace_offsets(offsets);
+    }
+
+    #[wasm_bindgen]
+    pub fn set_current_workplace_index(&mut self, index: u8) {
+        self.processor.set_current_workplace_index(index);
+    }
+
+    /// CNC mode - treats every G1 as an extrusion (matches TS's cncMode/g1AsExtrusion hook)
+    #[wasm_bindgen]
+    pub fn set_cnc_mode(&mut self, enabled: bool) {
+        self.processor.set_cnc_mode(enabled);
+    }
+
+    #[wasm_bindgen]
+    pub fn set_fix_radius(&mut self, enabled: bool) {
+        self.processor.set_fix_radius(enabled);
+    }
+
+    /// Arc plane selection for G2/G3 - accepts "XY", "XZ", or "YZ" (defaults to XY for anything else)
+    #[wasm_bindgen]
+    pub fn set_arc_plane(&mut self, plane: &str) {
+        let mapped = match plane {
+            "XZ" => crate::processor_properties::ArcPlane::XZ,
+            "YZ" => crate::processor_properties::ArcPlane::YZ,
+            _ => crate::processor_properties::ArcPlane::XY,
+        };
+        self.processor.set_arc_plane(mapped);
+    }
+
     /// Process G-code file and return results
     #[wasm_bindgen]
-    pub fn process_file(&mut self, 
+    pub fn process_file(&mut self,
                        file_content: &str, 
                        progress_callback: Option<ProgressCallback>) -> ProcessingResult {
         let start_time = js_sys::Date::now();
@@ -338,26 +485,56 @@ impl GCodeProcessor {
                 
                 let processing_time = js_sys::Date::now() - start_time;
                 
-                console_log!("File processing completed: {} lines, {} positions, {:.2}ms", 
+                console_log!("File processing completed: {} lines, {} positions, {:.2}ms",
                            gcode_lines.len(), self.position_tracker.len(), processing_time);
-                
+
+                let stats = self.processor.get_statistics();
                 ProcessingResult {
                     success: true,
                     error_message: String::new(),
+                    cancelled: false,
                     line_count: gcode_lines.len(),
                     move_count: self.position_tracker.len(),
                     processing_time_ms: processing_time,
+                    max_height: stats.max_height,
+                    min_height: stats.min_height,
+                    max_feed_rate: stats.max_feed_rate,
+                    min_feed_rate: stats.min_feed_rate,
+                    first_gcode_byte: stats.first_gcode_byte,
+                    last_gcode_byte: stats.last_gcode_byte,
+                    print_bounds_min_x: stats.print_bounds_min_x,
+                    print_bounds_min_y: stats.print_bounds_min_y,
+                    print_bounds_min_z: stats.print_bounds_min_z,
+                    print_bounds_max_x: stats.print_bounds_max_x,
+                    print_bounds_max_y: stats.print_bounds_max_y,
+                    print_bounds_max_z: stats.print_bounds_max_z,
                 }
             }
             Err(error) => {
-                console_log!("File processing failed: {}", error);
-                
+                let cancelled = error == crate::processor::CANCELLED_ERROR;
+                if !cancelled {
+                    console_log!("File processing failed: {}", error);
+                }
+
                 ProcessingResult {
                     success: false,
-                    error_message: error,
+                    error_message: if cancelled { String::new() } else { error },
+                    cancelled,
                     line_count: 0,
                     move_count: 0,
                     processing_time_ms: js_sys::Date::now() - start_time,
+                    max_height: 0.0,
+                    min_height: 0.0,
+                    max_feed_rate: 0.0,
+                    min_feed_rate: 0.0,
+                    first_gcode_byte: 0,
+                    last_gcode_byte: 0,
+                    print_bounds_min_x: f64::INFINITY,
+                    print_bounds_min_y: f64::INFINITY,
+                    print_bounds_min_z: f64::INFINITY,
+                    print_bounds_max_x: f64::NEG_INFINITY,
+                    print_bounds_max_y: f64::NEG_INFINITY,
+                    print_bounds_max_z: f64::NEG_INFINITY,
                 }
             }
         }
@@ -411,9 +588,12 @@ impl GCodeProcessor {
         }
     }
 
-    /// Generate render buffers for fast mesh creation in JavaScript
+    /// Generate render buffers for fast mesh creation in JavaScript. `perimeter_only` mirrors
+    /// TS's testRenderSceneProgressive filter (`if (perimeterOnly && !gCodeline.isPerimeter)`
+    /// skips the segment) - previously this parameter didn't exist at all, so the perimeterOnly
+    /// toggle silently did nothing whenever WASM was enabled.
     #[wasm_bindgen]
-    pub fn generate_render_buffers(&self, nozzle_size: f32, padding: f32, progress_callback: Option<ProgressCallback>) -> RenderBuffers {
+    pub fn generate_render_buffers(&self, nozzle_size: f32, padding: f32, perimeter_only: bool, progress_callback: Option<ProgressCallback>) -> RenderBuffers {
         let start_time = js_sys::Date::now();
         console_log!("Generating render buffers for {} positions", self.position_tracker.len());
 
@@ -436,16 +616,18 @@ impl GCodeProcessor {
         // Process positions in sorted order for consistency
         for &position in &self.sorted_positions {
             if let Some(pos_data) = self.position_tracker.get(&position) {
-                // Include both extruding and travel moves
+                // Matches TS's testRenderSceneProgressive filter
+                // (`if (perimeterOnly && !gCodeline.isPerimeter)` skips the segment)
+                if !(perimeter_only && !pos_data.is_perimeter) {
                     // Calculate matrix components (equivalent to TypeScript renderLine())
                     let (matrix, color) = self.calculate_render_matrix(pos_data, nozzle_size, padding);
-                    
+
                     // Add matrix data (16 floats for 4x4 matrix in column-major order)
                     matrix_data.extend_from_slice(&matrix);
-                    
+
                     // Add color data (RGBA)
                     color_data.extend_from_slice(&color);
-                    
+
                     // Add other buffer data
                     let color_id = Self::num_to_color(pos_data.line_number);
                     pick_data.extend_from_slice(&color_id); // RGB color for picking (matches TypeScript colorId/255)
@@ -456,6 +638,7 @@ impl GCodeProcessor {
                     is_perimeter_data.push(if pos_data.is_perimeter { 1.0 } else { 0.0 });
 
                     segment_count += 1;
+                }
             }
             
             processed_positions += 1;
@@ -467,7 +650,7 @@ impl GCodeProcessor {
                 // Only report if progress changed significantly
                 if progress - last_progress_report >= 0.05 {
                     if let Some(ref callback) = progress_callback {
-                        callback.call(progress.min(1.0), "Building render objects");
+                        call_progress(callback, progress.min(1.0), "Building render objects");
                     }
                     last_progress_report = progress;
                 }
@@ -479,7 +662,7 @@ impl GCodeProcessor {
         
         // Report completion
         if let Some(ref callback) = progress_callback {
-            callback.call(1.0, "Render objects complete");
+            call_progress(callback, 1.0, "Render objects complete");
         }
 
         RenderBuffers {

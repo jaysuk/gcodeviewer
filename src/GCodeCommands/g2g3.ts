@@ -65,6 +65,15 @@ export default function (props: Props, line: string): Base {
       line.extruding = move.extruding
       curPt = line.end
       move.segments.push(line)
+
+      // Height/print-bounds tracking - previously missing entirely for arcs (an arc-only file
+      // reported maxHeight 0), tracked per tessellated segment endpoint rather than just the
+      // arc's overall endpoint since a helical arc's Z can vary along its length. Matches the
+      // Rust/WASM parser's G2G3.rs.
+      props.updateHeight(line.end[1])
+      if (line.extruding) {
+         props.updatePrintBounds(line.end[0], line.end[1], line.end[2])
+      }
    })
 
    //Last point to currentposition

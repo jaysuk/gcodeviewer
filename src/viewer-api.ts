@@ -29,6 +29,7 @@ export default interface ViewerApi {
    setBackgroundColor(color: string): void
    setProgressColor(color: string): void
    setZBelt(enabled: boolean, angle: number): void
+   setG1AsExtrusion(enabled: boolean): void
    setCameraInertia(enabled: boolean): void
    setZClipPlane(top: number, bottom: number): void
    setTools(tools: { color: string; diameter?: number }[]): void
@@ -38,6 +39,15 @@ export default interface ViewerApi {
    setDeltaBed(isDelta: boolean): void
    showBed(visible: boolean): void
    showAxes(visible: boolean): void
+   showWorkplace(visible: boolean): void
+   setWorkplaceOffsets(offsets: { x: number; y: number; z: number }[]): void
+   setCurrentWorkplaceIndex(index: number): void
+   setNozzlePosition(position: { x: number; y: number; z: number }): void
+   setShowTravels(visible: boolean): void
+   setPersistTravels(persist: boolean): void
+   setFeedColors(minColor: string, maxColor: string): void
+   setFeedRateRange(min: number | null, max: number | null): void
+   cancelLoad(): void
    loadObjectBoundaries(objects: any[]): void
    showObjectSelection(visible: boolean): void
    showObjectLabels(visible: boolean): void
