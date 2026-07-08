@@ -65,6 +65,10 @@ export default class Processor {
    private minFeedColor: [number, number, number] = [0, 0, 1]
    private maxFeedColor: [number, number, number] = [1, 0, 0]
    private feedRateRangeOverride: { min: number; max: number } | null = null
+   // Ghost-line opacity (while alphaMode is on) and specular lighting toggle, re-applied to every
+   // material created
+   private transparencyPercent = 5
+   private useSpecular = false
    // Set by cancelLoad(), checked between chunks of whichever load loop is running
    private cancelRequested = false
    // Track position data for nozzle animation since Move objects get replaced with Move_Thin
@@ -287,6 +291,17 @@ export default class Processor {
       this.modelMaterial.forEach((m) => m.setPersistTravels(persist))
    }
 
+   // percent: 1-100, the opacity of not-yet-printed lines while alphaMode ("ghosting") is on
+   setTransparency(percent: number) {
+      this.transparencyPercent = percent
+      this.modelMaterial.forEach((m) => m.setTransparency(percent))
+   }
+
+   setUseSpecular(enabled: boolean) {
+      this.useSpecular = enabled
+      this.modelMaterial.forEach((m) => m.setUseSpecular(enabled))
+   }
+
    // Colors are hex strings like '#0000ff'
    setFeedColors(minColor: string, maxColor: string) {
       const min = Color3.FromHexString(minColor.substring(0, 7))
@@ -500,6 +515,8 @@ export default class Processor {
          m.setMaxFeedColor(this.maxFeedColor)
          m.setShowTravels(this.showTravels)
          m.setPersistTravels(this.persistTravels)
+         m.setTransparency(this.transparencyPercent)
+         m.setUseSpecular(this.useSpecular)
       })
 
       // Empty/unparseable files leave gCodeLines empty - nothing below has a last line to reference

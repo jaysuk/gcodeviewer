@@ -430,6 +430,14 @@ export default class ViewerProxy implements ViewerApi {
       this.webWorker.postMessage({ type: 'setFeedRateRange', min: min, max: max })
    }
 
+   setTransparency(percent: number): void {
+      this.webWorker.postMessage({ type: 'setTransparency', percent: percent })
+   }
+
+   setUseSpecular(enabled: boolean): void {
+      this.webWorker.postMessage({ type: 'setUseSpecular', enabled: enabled })
+   }
+
    cancelLoad(): void {
       this.webWorker.postMessage({ type: 'cancelLoad' })
    }

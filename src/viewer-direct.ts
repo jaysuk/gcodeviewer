@@ -193,6 +193,14 @@ export default class ViewerDirect implements ViewerApi {
       this.viewer.setFeedRateRange(min, max)
    }
 
+   setTransparency(percent: number): void {
+      this.viewer.setTransparency(percent)
+   }
+
+   setUseSpecular(enabled: boolean): void {
+      this.viewer.setUseSpecular(enabled)
+   }
+
    cancelLoad(): void {
       this.viewer.cancelLoad()
    }

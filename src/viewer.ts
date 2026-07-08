@@ -623,6 +623,14 @@ export default class Viewer {
       this.processor.setFeedRateRange(min, max)
    }
 
+   setTransparency(percent: number) {
+      this.processor.setTransparency(percent)
+   }
+
+   setUseSpecular(enabled: boolean) {
+      this.processor.setUseSpecular(enabled)
+   }
+
    cancelLoad() {
       this.processor.cancelLoad()
    }

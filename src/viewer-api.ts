@@ -47,6 +47,8 @@ export default interface ViewerApi {
    setPersistTravels(persist: boolean): void
    setFeedColors(minColor: string, maxColor: string): void
    setFeedRateRange(min: number | null, max: number | null): void
+   setTransparency(percent: number): void
+   setUseSpecular(enabled: boolean): void
    cancelLoad(): void
    loadObjectBoundaries(objects: any[]): void
    showObjectSelection(visible: boolean): void

@@ -200,6 +200,12 @@ self.addEventListener('message', async (message) => {
       case 'setFeedRateRange':
          self.viewer.setFeedRateRange(message.data.min, message.data.max)
          break
+      case 'setTransparency':
+         self.viewer.setTransparency(message.data.percent)
+         break
+      case 'setUseSpecular':
+         self.viewer.setUseSpecular(message.data.enabled)
+         break
       case 'cancelLoad':
          self.viewer.cancelLoad()
          break

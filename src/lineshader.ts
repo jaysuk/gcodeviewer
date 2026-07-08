@@ -166,6 +166,8 @@ export default class LineShaderMaterial {
    uniform bool lineMesh;
    uniform bool alphaMode;
    uniform bool progressMode;
+   uniform float ghostAlpha;
+   uniform bool useSpecular;
 
    flat in vec3 vDiffColor;
    flat in float fIsPerimeter;
@@ -182,15 +184,15 @@ export default class LineShaderMaterial {
 
          vec4 diffuseColor = vec4(vDiffColor, 1);
 
-         if(focused > 0.) 
+         if(focused > 0.)
          {
             diffuseColor.a = 1.0;
          }
          else
          {
-            diffuseColor.a = fShow >= 0.0 || !alphaMode ? 0.99 : 0.05; 
+            diffuseColor.a = fShow >= 0.0 || !alphaMode ? 0.99 : ghostAlpha;
          }
-         
+
         if(lineMesh) {
             if(fIsPerimeter < 1.0)
             {
@@ -214,7 +216,20 @@ export default class LineShaderMaterial {
             float intensity = light_intensity.x + NdotL * light_intensity.y;
             NdotL = abs(dot(normal, LIGHT_FRONT_DIR));
             intensity += NdotL * light_intensity.z;
-            gl_FragColor = vec4(diffuseColor.rgb * light_intensity.w * intensity, diffuseColor.a);
+            vec3 lit = diffuseColor.rgb * light_intensity.w * intensity;
+
+            if (useSpecular) {
+               // Camera looks down -Z in view space, so the direction to the eye is ~(0,0,1);
+               // Blinn-Phong half-vector against each fixed light direction already used above
+               vec3 viewDir = vec3(0.0, 0.0, 1.0);
+               vec3 halfTop = normalize(LIGHT_TOP_DIR + viewDir);
+               vec3 halfFront = normalize(LIGHT_FRONT_DIR + viewDir);
+               float specular = pow(max(dot(normal, halfTop), 0.0), 32.0)
+                  + pow(max(dot(normal, halfFront), 0.0), 32.0);
+               lit += vec3(specular) * 0.5;
+            }
+
+            gl_FragColor = vec4(lit, diffuseColor.a);
          }
    }`
 
@@ -267,6 +282,8 @@ export default class LineShaderMaterial {
                'maxFeedColor',
                'showTravels',
                'persistTravels',
+               'ghostAlpha',
+               'useSpecular',
             ],
          },
       )
@@ -285,6 +302,8 @@ export default class LineShaderMaterial {
             .setFloat3('maxFeedColor', 1, 0, 0)
             .setBool('showTravels', true)
             .setBool('persistTravels', false)
+            .setFloat('ghostAlpha', 0.05) // Matches the previous hardcoded not-yet-printed alpha
+            .setBool('useSpecular', false)
       })
 
       //Per loop
@@ -382,6 +401,22 @@ export default class LineShaderMaterial {
    setPersistTravels(persist: boolean) {
       this.material.onBindObservable.addOnce(() => {
          this.material.getEffect()?.setBool('persistTravels', persist)
+      })
+   }
+
+   // percent: 1-100, the opacity of not-yet-printed lines while alphaMode ("ghosting") is on -
+   // independent of alphaMode's own boolean toggle, which only decides whether ghosting happens
+   // at all
+   setTransparency(percent: number) {
+      const alpha = Math.min(Math.max(percent, 0), 100) / 100
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setFloat('ghostAlpha', alpha)
+      })
+   }
+
+   setUseSpecular(enabled: boolean) {
+      this.material.onBindObservable.addOnce(() => {
+         this.material.getEffect()?.setBool('useSpecular', enabled)
       })
    }
 
