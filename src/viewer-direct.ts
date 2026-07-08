@@ -192,6 +192,10 @@ export default class ViewerDirect implements ViewerApi {
       this.viewer.processor.stopNozzleAnimation()
    }
 
+   setNozzleAnimationSpeed(speed: number): void {
+      this.viewer.processor.setNozzleAnimationSpeed(speed)
+   }
+
    enableWasmProcessing(): Promise<void> {
       return this.viewer.processor.enableWasmProcessing()
    }

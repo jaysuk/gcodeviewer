@@ -321,6 +321,10 @@ export default class ViewerProxy implements ViewerApi {
       this.webWorker.postMessage({ type: 'stopNozzleAnimation' })
    }
 
+   setNozzleAnimationSpeed(speed: number): void {
+      this.webWorker.postMessage({ type: 'setNozzleAnimationSpeed', speed: speed })
+   }
+
    showViewBox(visible: boolean): void {
       this.webWorker.postMessage({ type: 'showViewBox', visible: visible })
    }

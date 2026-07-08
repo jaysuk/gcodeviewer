@@ -127,6 +127,10 @@ export default class Processor {
       return this.nozzle
    }
 
+   setNozzleAnimationSpeed(speed: number) {
+      this.nozzle?.setAnimationSpeed(speed)
+   }
+
    // Replaces the tool table, e.g. from the printer's object model. Colors are hex strings like '#ff0000'
    setTools(toolData: { color: string; diameter?: number }[]) {
       if (!toolData || toolData.length === 0) {

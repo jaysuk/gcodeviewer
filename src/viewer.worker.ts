@@ -113,6 +113,9 @@ self.addEventListener('message', async (message) => {
       case 'stopNozzleAnimation':
          self.viewer.processor.stopNozzleAnimation()
          break
+      case 'setNozzleAnimationSpeed':
+         self.viewer.processor.setNozzleAnimationSpeed(message.data.speed)
+         break
       case 'showViewBox':
          self.viewer.showViewBox(message.data.visible)
          break

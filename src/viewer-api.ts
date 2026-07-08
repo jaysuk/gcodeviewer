@@ -45,6 +45,7 @@ export default interface ViewerApi {
    pauseNozzleAnimation(): void
    resumeNozzleAnimation(): void
    stopNozzleAnimation(): void
+   setNozzleAnimationSpeed(speed: number): void
    enableWasmProcessing(): Promise<void>
    getProcessingStats(): Promise<any>
 }
