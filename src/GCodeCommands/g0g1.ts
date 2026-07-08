@@ -82,6 +82,7 @@ export default function (props: Props, line: string): Base {
 
    move.feedRate = props.CurrentFeedRate
    props.currentPosition.toArray(move.end)
+   props.updateHeight(props.currentPosition.y)
 
    return move
 }

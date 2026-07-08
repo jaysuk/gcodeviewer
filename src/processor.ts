@@ -17,6 +17,17 @@ import LineShaderMaterial from './lineshader'
 import Nozzle from './Renderables/nozzle'
 import { WasmProcessor, WasmRenderBuffers } from './wasmprocessor'
 
+export interface LoadFileResult {
+   start: number
+   end: number
+   failed: boolean
+   // Printer Z range spanned by extruding moves - drives a consumer's Z-clip slider bounds
+   maxHeight: number
+   minHeight: number
+   maxFeedRate: number
+   minFeedRate: number
+}
+
 export default class Processor {
    gCodeLines: Base[] = []
    processorProperties: ProcessorProperties = new ProcessorProperties()
@@ -190,7 +201,11 @@ export default class Processor {
       }
    }
 
-   async loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
+   private emptyLoadResult(failed: boolean): LoadFileResult {
+      return { start: 0, end: 0, failed, maxHeight: 0, minHeight: 0, maxFeedRate: 0, minFeedRate: 0 }
+   }
+
+   async loadFile(file): Promise<LoadFileResult> {
       try {
          return await this.loadFileInner(file)
       } catch (error) {
@@ -200,16 +215,17 @@ export default class Processor {
          // exceptional one.
          console.error('loadFile failed - resetting to an empty, consistent state', error)
          this.worker.postMessage({ type: 'progress', progress: 1, label: 'Processing file' })
-         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: true })
-         return { start: 0, end: 0, failed: true }
+         const result = this.emptyLoadResult(true)
+         this.worker.postMessage({ type: 'fileloaded', ...result })
+         return result
       }
    }
 
    // Re-processes the currently loaded file with whatever settings are active now (e.g. after
    // toggling a setting that requires a full re-parse). No-ops if nothing has been loaded yet.
-   async reload(): Promise<{ start: number; end: number; failed: boolean }> {
+   async reload(): Promise<LoadFileResult> {
       if (!this.originalFile) {
-         return { start: 0, end: 0, failed: false }
+         return this.emptyLoadResult(false)
       }
       return await this.loadFile(this.originalFile)
    }
@@ -226,10 +242,10 @@ export default class Processor {
       this.focusedColorId = 0
       this.positionTracker.clear()
       this.sortedPositions = []
-      this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: false })
+      this.worker.postMessage({ type: 'fileloaded', ...this.emptyLoadResult(false) })
    }
 
-   private async loadFileInner(file): Promise<{ start: number; end: number; failed: boolean }> {
+   private async loadFileInner(file): Promise<LoadFileResult> {
       this.originalFile = file
       this.cleanup()
       // Buffers from a previous WASM load must not leak into this one, otherwise a TS-parsed file would render the previous file's geometry
@@ -317,8 +333,9 @@ export default class Processor {
 
       // Empty/unparseable files leave gCodeLines empty - nothing below has a last line to reference
       if (this.gCodeLines.length === 0) {
-         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: false })
-         return { start: 0, end: 0, failed: false }
+         const result = this.emptyLoadResult(false)
+         this.worker.postMessage({ type: 'fileloaded', ...result })
+         return result
       }
 
       this.modelMaterial.forEach((m) =>
@@ -341,6 +358,10 @@ export default class Processor {
          start: startByte,
          end: endByte,
          failed: false,
+         maxHeight: this.processorProperties.maxHeight,
+         minHeight: this.processorProperties.minHeight,
+         maxFeedRate: this.processorProperties.maxFeedRate,
+         minFeedRate: this.processorProperties.minFeedRate,
       })
 
       // Initialize nozzle position to start of print
@@ -356,7 +377,15 @@ export default class Processor {
       }
 
       this.setMeshMode(this.lastMeshMode)
-      return { start: startByte, end: endByte, failed: false }
+      return {
+         start: startByte,
+         end: endByte,
+         failed: false,
+         maxHeight: this.processorProperties.maxHeight,
+         minHeight: this.processorProperties.minHeight,
+         maxFeedRate: this.processorProperties.maxFeedRate,
+         minFeedRate: this.processorProperties.minFeedRate,
+      }
    }
 
    private async loadFileStreamed(file: string) {

@@ -1,5 +1,6 @@
 import ViewerWorker from './viewer.worker?worker&inline'
 import ViewerApi from './viewer-api'
+import { LoadFileResult } from './processor'
 
 const mouseEventFields = [
    'altKey',
@@ -204,15 +205,27 @@ export default class ViewerProxy implements ViewerApi {
 
    init(): void {}
 
+   private static toLoadFileResult(data: any): LoadFileResult {
+      return {
+         start: data.start,
+         end: data.end,
+         failed: !!data.failed,
+         maxHeight: data.maxHeight ?? 0,
+         minHeight: data.minHeight ?? 0,
+         maxFeedRate: data.maxFeedRate ?? 0,
+         minFeedRate: data.minFeedRate ?? 0,
+      }
+   }
+
    // Resolves (never rejects) once the worker reports the load finished - a bad/unparseable file
    // resolves with failed: true rather than throwing, since callers check for that outcome rather
    // than treating it as exceptional.
-   loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
+   loadFile(file): Promise<LoadFileResult> {
       return new Promise((resolve) => {
          const handleFileLoaded = (e: MessageEvent) => {
             if (e.data.type === 'fileloaded') {
                this.webWorker.removeEventListener('message', handleFileLoaded)
-               resolve({ start: e.data.start, end: e.data.end, failed: !!e.data.failed })
+               resolve(ViewerProxy.toLoadFileResult(e.data))
             }
          }
          this.webWorker.addEventListener('message', handleFileLoaded)
@@ -221,12 +234,12 @@ export default class ViewerProxy implements ViewerApi {
    }
 
    // Re-processes the currently loaded file with whatever settings are active now
-   reload(): Promise<{ start: number; end: number; failed: boolean }> {
+   reload(): Promise<LoadFileResult> {
       return new Promise((resolve) => {
          const handleFileLoaded = (e: MessageEvent) => {
             if (e.data.type === 'fileloaded') {
                this.webWorker.removeEventListener('message', handleFileLoaded)
-               resolve({ start: e.data.start, end: e.data.end, failed: !!e.data.failed })
+               resolve(ViewerProxy.toLoadFileResult(e.data))
             }
          }
          this.webWorker.addEventListener('message', handleFileLoaded)

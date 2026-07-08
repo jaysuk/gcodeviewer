@@ -107,7 +107,8 @@ function parseG0G1Fast(props: ProcessorProperties, line: string): Base | null {
    
    move.feedRate = props.CurrentFeedRate
    props.currentPosition.toArray(move.end)
-   
+   props.updateHeight(props.currentPosition.y)
+
    return move
 }
 

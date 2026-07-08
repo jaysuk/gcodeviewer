@@ -1,5 +1,6 @@
 import Viewer from './viewer'
 import ViewerApi from './viewer-api'
+import { LoadFileResult } from './processor'
 
 export default class ViewerDirect implements ViewerApi {
    viewer: Viewer
@@ -34,11 +35,11 @@ export default class ViewerDirect implements ViewerApi {
       }
    }
 
-   loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
+   loadFile(file): Promise<LoadFileResult> {
       return this.viewer.loadFile(file)
    }
 
-   reload(): Promise<{ start: number; end: number; failed: boolean }> {
+   reload(): Promise<LoadFileResult> {
       return this.viewer.reload()
    }
 

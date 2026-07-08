@@ -1,3 +1,5 @@
+import { LoadFileResult } from './processor'
+
 // The consumer-facing surface shared by ViewerProxy (worker-backed) and ViewerDirect
 // (same-thread). Both classes `implements` this so tsc catches API drift between them at
 // compile time instead of it only surfacing when a consumer swaps which one they import.
@@ -5,8 +7,8 @@ export default interface ViewerApi {
    passThru: any
 
    init(): void
-   loadFile(file: any): Promise<{ start: number; end: number; failed: boolean }>
-   reload(): Promise<{ start: number; end: number; failed: boolean }>
+   loadFile(file: any): Promise<LoadFileResult>
+   reload(): Promise<LoadFileResult>
    clear(): Promise<void>
    unload(): void
    resize(): void

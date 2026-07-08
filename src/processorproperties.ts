@@ -92,6 +92,19 @@ export default class ProcessorProperties {
       return this.workplaceOffsets[this.currentWorkplaceIdx]
    }
 
+   // Matches the Rust/WASM parser's update_height() (called for every move, extruding or not) -
+   // previously only tracked on the WASM side, leaving maxHeight/minHeight permanently at their
+   // 0/0 defaults (and any consumer relying on them, e.g. BuildObjects' cancel-object overlay
+   // sizing) wrong whenever a file went through the pure-TypeScript parser.
+   updateHeight(z: number) {
+      if (z > this.maxHeight) {
+         this.maxHeight = z
+      }
+      if (z < this.minHeight) {
+         this.minHeight = z
+      }
+   }
+
    buildToolFloat32Array() {
       const toolArray = new Array(this.tools.length * 4)
       for (let idx = 0; idx < this.tools.length; idx++) {
