@@ -51,6 +51,12 @@ self.addEventListener('message', async (message) => {
       case 'loadFile':
          self.viewer.loadFile(message.data.file)
          break
+      case 'clearScene':
+         self.viewer.clear()
+         break
+      case 'reloadFile':
+         self.viewer.reload()
+         break
       case 'unload':
          self.viewer.unload()
          break

@@ -5,7 +5,9 @@ export default interface ViewerApi {
    passThru: any
 
    init(): void
-   loadFile(file: any): void
+   loadFile(file: any): Promise<{ start: number; end: number; failed: boolean }>
+   reload(): Promise<{ start: number; end: number; failed: boolean }>
+   clear(): Promise<void>
    unload(): void
    updateFilePosition(filePosition: number, animate?: boolean): void
    getGCodes(position: number, count: number): void

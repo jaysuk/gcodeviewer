@@ -165,20 +165,46 @@ export default class Processor {
       }
    }
 
-   async loadFile(file) {
+   async loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
       try {
-         await this.loadFileInner(file)
+         return await this.loadFileInner(file)
       } catch (error) {
          // A failure partway through must never leave the UI's progress bar/file state stuck on
-         // a half-loaded model (see the gpuPicker-crashes-loadFile class of bug)
+         // a half-loaded model (see the gpuPicker-crashes-loadFile class of bug). Resolves rather
+         // than rejects - a bad/unparseable file is an expected outcome callers check for, not an
+         // exceptional one.
          console.error('loadFile failed - resetting to an empty, consistent state', error)
          this.worker.postMessage({ type: 'progress', progress: 1, label: 'Processing file' })
-         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0 })
-         throw error
+         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: true })
+         return { start: 0, end: 0, failed: true }
       }
    }
 
-   private async loadFileInner(file) {
+   // Re-processes the currently loaded file with whatever settings are active now (e.g. after
+   // toggling a setting that requires a full re-parse). No-ops if nothing has been loaded yet.
+   async reload(): Promise<{ start: number; end: number; failed: boolean }> {
+      if (!this.originalFile) {
+         return { start: 0, end: 0, failed: false }
+      }
+      return await this.loadFile(this.originalFile)
+   }
+
+   // Blanks the viewport without loading a new file - distinct from cleanup(), which only tears
+   // down meshes/materials as the first step of loadFile(); this also drops the "currently loaded
+   // file" state so a subsequent reload() has nothing to reload.
+   clear() {
+      this.cleanup()
+      this.originalFile = undefined
+      this.gCodeLines = []
+      this.wasmRenderBuffers = null
+      this.filePosition = 0
+      this.focusedColorId = 0
+      this.positionTracker.clear()
+      this.sortedPositions = []
+      this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: false })
+   }
+
+   private async loadFileInner(file): Promise<{ start: number; end: number; failed: boolean }> {
       this.originalFile = file
       this.cleanup()
       // Buffers from a previous WASM load must not leak into this one, otherwise a TS-parsed file would render the previous file's geometry
@@ -265,8 +291,8 @@ export default class Processor {
 
       // Empty/unparseable files leave gCodeLines empty - nothing below has a last line to reference
       if (this.gCodeLines.length === 0) {
-         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0 })
-         return
+         this.worker.postMessage({ type: 'fileloaded', start: 0, end: 0, failed: false })
+         return { start: 0, end: 0, failed: false }
       }
 
       this.modelMaterial.forEach((m) =>
@@ -288,6 +314,7 @@ export default class Processor {
          type: 'fileloaded',
          start: startByte,
          end: endByte,
+         failed: false,
       })
 
       // Initialize nozzle position to start of print
@@ -303,6 +330,7 @@ export default class Processor {
       }
 
       this.setMeshMode(this.lastMeshMode)
+      return { start: startByte, end: endByte, failed: false }
    }
 
    private async loadFileStreamed(file: string) {

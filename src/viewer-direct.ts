@@ -29,8 +29,17 @@ export default class ViewerDirect implements ViewerApi {
       }
    }
 
-   loadFile(file): void {
-      this.viewer.loadFile(file)
+   loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
+      return this.viewer.loadFile(file)
+   }
+
+   reload(): Promise<{ start: number; end: number; failed: boolean }> {
+      return this.viewer.reload()
+   }
+
+   clear(): Promise<void> {
+      this.viewer.clear()
+      return Promise.resolve()
    }
 
    unload(): void {

@@ -430,7 +430,15 @@ export default class Viewer {
    }
 
    async loadFile(file) {
-      await this.processor.loadFile(file)
+      return await this.processor.loadFile(file)
+   }
+
+   async reload() {
+      return await this.processor.reload()
+   }
+
+   clear() {
+      this.processor.clear()
    }
 
    setMaxFPS(fps) {

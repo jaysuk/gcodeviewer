@@ -196,8 +196,48 @@ export default class ViewerProxy implements ViewerApi {
 
    init(): void {}
 
-   loadFile(file): void {
-      this.webWorker.postMessage({ type: 'loadFile', file: file })
+   // Resolves (never rejects) once the worker reports the load finished - a bad/unparseable file
+   // resolves with failed: true rather than throwing, since callers check for that outcome rather
+   // than treating it as exceptional.
+   loadFile(file): Promise<{ start: number; end: number; failed: boolean }> {
+      return new Promise((resolve) => {
+         const handleFileLoaded = (e: MessageEvent) => {
+            if (e.data.type === 'fileloaded') {
+               this.webWorker.removeEventListener('message', handleFileLoaded)
+               resolve({ start: e.data.start, end: e.data.end, failed: !!e.data.failed })
+            }
+         }
+         this.webWorker.addEventListener('message', handleFileLoaded)
+         this.webWorker.postMessage({ type: 'loadFile', file: file })
+      })
+   }
+
+   // Re-processes the currently loaded file with whatever settings are active now
+   reload(): Promise<{ start: number; end: number; failed: boolean }> {
+      return new Promise((resolve) => {
+         const handleFileLoaded = (e: MessageEvent) => {
+            if (e.data.type === 'fileloaded') {
+               this.webWorker.removeEventListener('message', handleFileLoaded)
+               resolve({ start: e.data.start, end: e.data.end, failed: !!e.data.failed })
+            }
+         }
+         this.webWorker.addEventListener('message', handleFileLoaded)
+         this.webWorker.postMessage({ type: 'reloadFile' })
+      })
+   }
+
+   // Blanks the viewport without loading a new file
+   clear(): Promise<void> {
+      return new Promise((resolve) => {
+         const handleFileLoaded = (e: MessageEvent) => {
+            if (e.data.type === 'fileloaded') {
+               this.webWorker.removeEventListener('message', handleFileLoaded)
+               resolve()
+            }
+         }
+         this.webWorker.addEventListener('message', handleFileLoaded)
+         this.webWorker.postMessage({ type: 'clearScene' })
+      })
    }
 
    unload(): void {
