@@ -320,6 +320,14 @@ export default class ViewerProxy implements ViewerApi {
       this.webWorker.postMessage({ type: 'setBackgroundColor', color: color })
    }
 
+   setProgressColor(color: string): void {
+      this.webWorker.postMessage({ type: 'setProgressColor', color: color })
+   }
+
+   setZBelt(enabled: boolean, angle: number): void {
+      this.webWorker.postMessage({ type: 'setZBelt', enabled: enabled, angle: angle })
+   }
+
    setCameraInertia(enabled: boolean): void {
       this.webWorker.postMessage({ type: 'setCameraInertia', enabled: enabled })
    }

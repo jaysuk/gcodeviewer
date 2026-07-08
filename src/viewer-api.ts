@@ -23,6 +23,8 @@ export default interface ViewerApi {
    setCameraDirection(direction: { x: number; y: number; z: number }): void
    resetCamera(): void
    setBackgroundColor(color: string): void
+   setProgressColor(color: string): void
+   setZBelt(enabled: boolean, angle: number): void
    setCameraInertia(enabled: boolean): void
    setZClipPlane(top: number, bottom: number): void
    setTools(tools: { color: string; diameter?: number }[]): void

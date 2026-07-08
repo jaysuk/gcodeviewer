@@ -128,6 +128,12 @@ self.addEventListener('message', async (message) => {
       case 'setBackgroundColor':
          self.viewer.setBackgroundColor(message.data.color)
          break
+      case 'setProgressColor':
+         self.viewer.setProgressColor(message.data.color)
+         break
+      case 'setZBelt':
+         self.viewer.setZBelt(message.data.enabled, message.data.angle)
+         break
       case 'setCameraInertia':
          self.viewer.setCameraInertia(message.data.enabled)
          break

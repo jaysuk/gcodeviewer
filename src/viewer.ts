@@ -334,6 +334,16 @@ export default class Viewer {
       }
    }
 
+   setProgressColor(hexColor: string) {
+      this.processor.setProgressColor(hexColor)
+   }
+
+   // Belt-printer kinematics (props.zBelt/gantryAngle) are parse-time settings - call reload()
+   // afterwards to re-parse the current file under the new kinematics
+   setZBelt(enabled: boolean, angle: number) {
+      this.processor.setZBelt(enabled, angle)
+   }
+
    setCameraInertia(enabled: boolean) {
       if (this.orbitCamera) {
          this.orbitCamera.inertia = enabled ? 0.9 : 0

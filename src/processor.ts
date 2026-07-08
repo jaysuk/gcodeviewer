@@ -5,7 +5,7 @@ import { Scene } from '@babylonjs/core/scene'
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder'
 import { Mesh } from '@babylonjs/core/Meshes/mesh'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { Color3 } from '@babylonjs/core/Maths/math.color'
+import { Color3, Color4 } from '@babylonjs/core/Maths/math.color'
 import { Axis, Space } from '@babylonjs/core/Maths/math.axis'
 import Tool from './tools'
 import '@babylonjs/core/Meshes/thinInstanceMesh'
@@ -143,6 +143,31 @@ export default class Processor {
       this.processorProperties.currentTool = this.processorProperties.tools[0]
    }
 
+   // Last belt-printer settings provided via setZBelt(), re-applied after every loadFile() resets
+   // processorProperties - zBelt/gantry angle are parse-time settings baked into ProcessorProperties
+   private pendingZBelt: { enabled: boolean; angle: number } | null = null
+
+   setZBelt(enabled: boolean, angle: number) {
+      this.pendingZBelt = { enabled, angle }
+      this.applyZBelt()
+   }
+
+   private applyZBelt() {
+      if (!this.pendingZBelt) {
+         return
+      }
+      this.processorProperties.zBelt = this.pendingZBelt.enabled
+      this.processorProperties.setGantryAngle(this.pendingZBelt.angle)
+   }
+
+   // Color4.FromHexString expects an 8-hex-digit (RRGGBBAA) string; pad with full alpha if the
+   // caller only supplied RRGGBB, matching Bed.getBedColor4()'s convention elsewhere in this codebase
+   setProgressColor(hexColor: string) {
+      const color = Color4.FromHexString(hexColor.length >= 9 ? hexColor : hexColor.padEnd(9, 'F'))
+      const rgba = [color.r * 255, color.g * 255, color.b * 255, color.a * 255]
+      this.modelMaterial.forEach((m) => m.setProgressColor(rgba))
+   }
+
    cleanup() {
       this.gpuPicker?.clearRenderList()
       this.focusedColorId = 0
@@ -213,6 +238,7 @@ export default class Processor {
       this.processorProperties = new ProcessorProperties() //Reset for now
       this.processorProperties.slicer = slicerFactory(file)
       this.applyUserTools()
+      this.applyZBelt()
 
       // Reset processing stats
       const startTime = performance.now()
@@ -530,6 +556,7 @@ export default class Processor {
             this.processorProperties = new ProcessorProperties()
             this.processorProperties.slicer = slicerFactory(file)
             this.applyUserTools()
+            this.applyZBelt()
 
             await this.loadFileStreamedWithPositions(file)
             const compatTime = performance.now() - compatStartTime
@@ -545,6 +572,7 @@ export default class Processor {
             this.processorProperties = new ProcessorProperties()
             this.processorProperties.slicer = slicerFactory(file)
             this.applyUserTools()
+            this.applyZBelt()
 
             await this.loadFileStreamedWithPositions(file)
             this.processingStats.typescriptTime = performance.now() - tsStartTime

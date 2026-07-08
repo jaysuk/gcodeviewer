@@ -103,6 +103,14 @@ export default class ViewerDirect implements ViewerApi {
       this.viewer.setBackgroundColor(color)
    }
 
+   setProgressColor(color: string): void {
+      this.viewer.setProgressColor(color)
+   }
+
+   setZBelt(enabled: boolean, angle: number): void {
+      this.viewer.setZBelt(enabled, angle)
+   }
+
    setCameraInertia(enabled: boolean): void {
       this.viewer.setCameraInertia(enabled)
    }
