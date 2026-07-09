@@ -178,21 +178,23 @@ export default class Nozzle {
       )
       
       if (distance === 0) {
-         return 100 // Default short duration for zero-distance moves
-      }
-      
-      if (movement.feedRate === 0) {
-         return 500 // Default duration when no feedrate
+         return 100 / this.animationSpeed // Default short duration for zero-distance moves
       }
 
-      // Calculate realistic duration based on feedrate and animation speed multiplier
+      if (movement.feedRate === 0) {
+         return 500 / this.animationSpeed // Default duration when no feedrate
+      }
+
+      // Calculate realistic duration based on feedrate, clamp to a reasonable per-move visual
+      // duration at 1x pace, THEN apply the speed multiplier - clamping AFTER dividing by speed
+      // (the previous order) meant the 50ms floor was hit by nearly every short segment (typical
+      // 3D-printing G-code is almost all short segments) well before any speed setting above
+      // ~10x, silently capping how much a real multi-thousand-move file's overall playback could
+      // actually speed up regardless of the chosen multiplier.
       const realDurationMs = (distance / movement.feedRate) * 60000 // Convert mm/min to ms
-      const scaledDuration = realDurationMs / this.animationSpeed
-      
-      // Clamp to reasonable bounds for visualization
-      const finalDuration = Math.max(50, Math.min(scaledDuration, 3000))
-      
-      return finalDuration
+      const clampedMs = Math.max(50, Math.min(realDurationMs, 3000))
+
+      return clampedMs / this.animationSpeed
    }
 
    /**
