@@ -1499,77 +1499,85 @@ export default class Processor {
       })
    }
 
+   // Above 10x, a fixed 10ms gap between steps (below) plus one tween/postMessage/uniform-update
+   // cycle per move caps real throughput at roughly 100 moves/sec no matter how high speed goes -
+   // for a multi-thousand-move file that overhead, not the per-move duration math, is what
+   // actually limits playback. Batching amortizes that fixed per-step overhead across several
+   // moves per tick instead of paying it once per move.
+   private getAnimationBatchSize(): number {
+      const speed = this.nozzle?.getAnimationSpeed() ?? 1
+      if (speed <= 10) {
+         return 1
+      }
+      return Math.min(Math.ceil(speed / 10), 500)
+   }
+
    private animateToNextPosition(): void {
       if (!this.isPlaying || !this.nozzle) {
          return
       }
 
       const currentIndex = this.getCurrentAnimationIndex()
-      const nextIndex = currentIndex + 1
+      const batchSize = this.getAnimationBatchSize()
+      const targetIndex = Math.min(currentIndex + batchSize, this.sortedPositions.length - 1)
 
-      if (nextIndex >= this.sortedPositions.length) {
+      if (targetIndex <= currentIndex) {
          this.stopNozzleAnimation()
          return
       }
 
-      const nextFilePosition = this.sortedPositions[nextIndex]
-      const positionData = this.positionTracker.get(nextFilePosition)
+      const targetFilePosition = this.sortedPositions[targetIndex]
+      const positionData = this.positionTracker.get(targetFilePosition)
 
       if (positionData) {
          // Update file position to match animation progress - but don't trigger position change events
-         this.filePosition = nextFilePosition
-         this.modelMaterial.forEach((m) => m.updateCurrentFilePosition(nextFilePosition))
-         this.gpuPicker.updateCurrentPosition(nextFilePosition)
+         this.filePosition = targetFilePosition
+         this.modelMaterial.forEach((m) => m.updateCurrentFilePosition(targetFilePosition))
+         this.gpuPicker.updateCurrentPosition(targetFilePosition)
 
-         // Notify UI of position change
+         // Notify UI of position change - once per batch, not once per move within it
          this.worker.postMessage({
             type: 'animationPositionUpdate',
-            position: nextFilePosition,
-            progress: nextIndex / this.sortedPositions.length,
+            position: targetFilePosition,
+            progress: targetIndex / this.sortedPositions.length,
          })
 
-         // Create movement for nozzle
-         const fakeMove = {
-            end: [positionData.x, positionData.y, positionData.z],
-            feedRate: positionData.feedRate,
-            extruding: positionData.extruding,
-         }
-
-         try {
-            const movement = this.nozzle.createMovementFromGCode(fakeMove as any, this.nozzle.getCurrentPosition())
-
-            // Use the actual calculated duration from nozzle movement instead of fixed delay
-            this.nozzle
-               .moveToPosition(movement)
-               .then(() => {
-                  if (this.isPlaying) {
-                     // Use minimal delay - nozzle animation duration handles timing
-                     this.playbackTimeout = window.setTimeout(() => {
-                        this.animateToNextPosition()
-                     }, 10)
-                  }
-               })
-               .catch(() => {
-                  if (this.isPlaying) {
-                     this.playbackTimeout = window.setTimeout(() => {
-                        this.animateToNextPosition()
-                     }, 10)
-                  }
-               })
-         } catch {
-            if (this.isPlaying) {
-               this.playbackTimeout = window.setTimeout(() => {
-                  this.animateToNextPosition()
-               }, 10)
+         if (batchSize === 1) {
+            // Normal speed: keep the existing smooth per-move tween
+            const fakeMove = {
+               end: [positionData.x, positionData.y, positionData.z],
+               feedRate: positionData.feedRate,
+               extruding: positionData.extruding,
             }
+            try {
+               const movement = this.nozzle.createMovementFromGCode(fakeMove as any, this.nozzle.getCurrentPosition())
+               this.nozzle
+                  .moveToPosition(movement)
+                  .then(() => this.scheduleNextAnimationStep(10))
+                  .catch(() => this.scheduleNextAnimationStep(10))
+            } catch {
+               this.scheduleNextAnimationStep(10)
+            }
+         } else {
+            // Batched: skip the intermediate moves' tweens/uniform updates entirely and jump the
+            // nozzle straight to the batch's final position - the visual smoothness a tween buys
+            // isn't distinguishable at this speed anyway, and it's the per-move overhead this is
+            // meant to eliminate
+            this.nozzle.forcePosition({ x: positionData.x, y: positionData.y, z: positionData.z })
+            this.scheduleNextAnimationStep(0)
          }
       } else {
-         if (this.isPlaying) {
-            this.playbackTimeout = window.setTimeout(() => {
-               this.animateToNextPosition()
-            }, 10)
-         }
+         this.scheduleNextAnimationStep(10)
       }
+   }
+
+   private scheduleNextAnimationStep(delayMs: number): void {
+      if (!this.isPlaying) {
+         return
+      }
+      this.playbackTimeout = window.setTimeout(() => {
+         this.animateToNextPosition()
+      }, delayMs)
    }
 
    isNozzleAnimationPlaying(): boolean {
