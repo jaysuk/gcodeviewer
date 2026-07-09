@@ -18,6 +18,7 @@ import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents'
 import { Plane } from '@babylonjs/core/Maths/math.plane'
 import ViewBox, { ViewBoxDirection } from './Renderables/viewbox'
 import Bed, { BuildVolume, RenderBedMode } from './Renderables/bed'
+import Ruler from './Renderables/ruler'
 import Axes from './Renderables/axes'
 import BuildObjects from './Renderables/buildobjects'
 import '@babylonjs/core/Rendering/'
@@ -42,6 +43,7 @@ export default class Viewer {
    processor: Processor = new Processor()
    viewBox: ViewBox | null = null
    bed: Bed | null = null
+   ruler: Ruler | null = null
    axes: Axes | null = null
    // Small axis-cross marking the active workplace's (G54-G59.3) origin - reuses the Axes
    // renderable at a smaller size rather than a bespoke mesh, since "an axis cross at a position"
@@ -103,7 +105,7 @@ export default class Viewer {
       this.worker = fakeWorker
    }
 
-   setSizes(width, height) {
+   setSizes(width, height, left: number = 0, top: number = 0) {
       if (this.offscreen) {
          //@ts-expect-error clientWidth is readonly on the canvas types but assignable on the faked worker-side canvas
          this.offscreenCanvas.clientWidth = width
@@ -112,8 +114,15 @@ export default class Viewer {
          this.offscreenCanvas.width = width
          this.offscreenCanvas.height = height
 
-         this.rect.right = this.rect.width = width
-         this.rect.bottom = this.rect.height = height
+         // left/top reflect the real canvas's actual on-page position (see ViewerProxy.resize) -
+         // Babylon's pointer-position math reads these off getBoundingClientRect() to convert a
+         // raw event's clientX/clientY into canvas-relative coordinates
+         this.rect.left = this.rect.x = left
+         this.rect.top = this.rect.y = top
+         this.rect.right = left + width
+         this.rect.bottom = top + height
+         this.rect.width = width
+         this.rect.height = height
       }
       if (this.engine) {
          this.engine.resize()
@@ -188,6 +197,12 @@ export default class Viewer {
          this.registerClipIgnore(mesh)
       }
       this.bed.buildBed()
+
+      this.ruler = new Ruler(this.scene)
+      this.ruler.registerClipIgnore = (mesh) => {
+         this.registerClipIgnore(mesh)
+      }
+      this.ruler.build(this.bed.buildVolume)
 
       this.axes = new Axes(this.scene)
       this.axes.registerClipIgnore = (mesh) => {
@@ -561,6 +576,7 @@ export default class Viewer {
       if (this.bed) {
          this.bed.buildVolume = volume
          this.bed.commitBedSize()
+         this.ruler?.build(volume)
          this.axes?.render()
          this.scene?.render(true)
       }

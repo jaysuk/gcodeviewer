@@ -190,6 +190,9 @@ export default class Bed {
       gridMaterial.majorUnitFrequency = 10
       gridMaterial.minorUnitVisibility = 0.6
       gridMaterial.gridOffset = new Vector3(0, 0, 0)
+      // CreatePlane makes a single-sided mesh - without this the grid vanished entirely once the
+      // camera looked up at its back face (e.g. rotating to view from underneath the bed)
+      gridMaterial.backFaceCulling = false
       return gridMaterial
    }
 

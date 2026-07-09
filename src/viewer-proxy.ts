@@ -84,10 +84,18 @@ export default class ViewerProxy implements ViewerApi {
    // a window resize event (a panel toggling, going fullscreen, a CSS breakpoint) needs this
    // called explicitly.
    resize(): void {
+      // The worker's faked offscreen-canvas getBoundingClientRect() has no other way to know
+      // where the real canvas actually sits on the page - left/top must be pushed explicitly, or
+      // every pointer-position calculation downstream (the orientation gizmo's click-to-snap,
+      // pick-focus, GPU-picker hover) silently assumes the canvas is pinned at page (0,0), which
+      // is essentially never true once the canvas is embedded in a real host layout.
+      const rect = this.mainCanvas?.getBoundingClientRect()
       this.webWorker.postMessage({
          type: 'resize',
          width: this.mainCanvas?.clientWidth,
          height: this.mainCanvas?.clientHeight,
+         left: rect?.left ?? 0,
+         top: rect?.top ?? 0,
       })
    }
 
