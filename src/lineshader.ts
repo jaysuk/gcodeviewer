@@ -340,15 +340,35 @@ export default class LineShaderMaterial {
    // slower. The effect finishes compiling for all three variants at roughly the same time
    // regardless of which is currently visible, so the immediate path below covers the overwhelming
    // majority of calls after the first frame or two.
+   // Called on every single simulation/scrub/pick-jump step (unlike the other setters here, which
+   // only fire on rare user settings changes). A uniform write MUST happen via onBindObservable -
+   // WebGL's gl.uniform* calls apply to whichever program is currently bound in the GL context,
+   // not "the one this Effect object conceptually belongs to", so calling effect.setFloat()
+   // outside of this material's own bind (which is what actually makes it the active program) can
+   // silently write to the wrong program or no-op. isReady() only means "finished compiling", not
+   // "currently bound" - an earlier version of this method used isReady() as an immediate-update
+   // shortcut, which looked correct in isolation but broke playback/scrubbing/pick-to-jump
+   // entirely, since the position uniform was no longer reliably reaching the shader at all.
+   //
+   // The real fix for the leak this used to have (every call queuing a new addOnce, which never
+   // fires - and so never frees itself - for the 2 of every 3 box/cylinder/line materials per
+   // chunk that aren't the currently active mesh-mode variant) is to coalesce: track whether a
+   // callback is already queued for this material and, if so, just update the pending value it'll
+   // read when it fires, instead of queuing another one. This bounds the leak to at most one
+   // stale callback per inactive material (however long the app runs), not one per step.
+   private pendingFilePosition: number | null = null
+   private filePositionCallbackQueued = false
+
    updateCurrentFilePosition(position: number) {
-      const effect = this.material.getEffect()
-      if (effect?.isReady()) {
-         effect.setFloat('currentPosition', position)
-      } else {
-         this.material.onBindObservable.addOnce(() => {
-            this.material.getEffect()?.setFloat('currentPosition', position)
-         })
+      this.pendingFilePosition = position
+      if (this.filePositionCallbackQueued) {
+         return
       }
+      this.filePositionCallbackQueued = true
+      this.material.onBindObservable.addOnce(() => {
+         this.filePositionCallbackQueued = false
+         this.material.getEffect()?.setFloat('currentPosition', this.pendingFilePosition!)
+      })
    }
 
    getMaterial() {
