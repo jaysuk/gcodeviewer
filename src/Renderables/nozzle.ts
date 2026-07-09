@@ -219,9 +219,13 @@ export default class Nozzle {
     */
    async moveToPosition(movement: NozzleMovement): Promise<void> {
       if (!this.isVisible) {
-         // If not visible, just update position instantly
+         // No visual tween needed, but playback pacing (Processor.animateToNextPosition awaits
+         // this before scheduling the next step) still needs to respect animationSpeed - resolving
+         // instantly here made the speed control a no-op whenever the nozzle marker itself wasn't
+         // shown (likely the common case), since there was no slower baseline left to speed up.
          this.setPosition(movement.endPos)
-         return Promise.resolve()
+         const duration = this.calculateMovementDuration(movement)
+         return new Promise((resolve) => setTimeout(resolve, duration))
       }
 
       // Stop any existing animation
@@ -290,7 +294,9 @@ export default class Nozzle {
     * Set animation speed multiplier
     */
    setAnimationSpeed(speed: number): void {
-      this.animationSpeed = Math.max(0.1, Math.min(speed, 10.0))
+      // Consumer UI (DWC) offers speed presets up to 100x - was clamped to 10.0 here, so every
+      // preset above 10x silently behaved identically to 10x
+      this.animationSpeed = Math.max(0.1, Math.min(speed, 100.0))
    }
 
    getAnimationSpeed(): number {

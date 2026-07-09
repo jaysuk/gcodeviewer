@@ -967,8 +967,8 @@ export default class Processor {
       }
    }
 
-   addNewMaterial(): LineShaderMaterial {
-      const m = new LineShaderMaterial(this.scene)
+   addNewMaterial(isLineMesh: boolean = false): LineShaderMaterial {
+      const m = new LineShaderMaterial(this.scene, isLineMesh)
       this.modelMaterial.push(m)
       return m
    }
@@ -1066,9 +1066,6 @@ export default class Processor {
       // identical per-instance filePosition/pickColor/tool attributes), so it doesn't need its
       // own always-enabled shadow copy of the box meshes
       this.gpuPicker?.setActiveMeshes(activeMeshes)
-
-      // Refresh material states to ensure correct lighting
-      this.modelMaterial.forEach((m) => m.refreshMaterialState())
    }
 
    testBuildMesh(renderlines, segCount, alphaIndex): Mesh[] {
@@ -1108,10 +1105,9 @@ export default class Processor {
       cyl.alphaIndex = alphaIndex
       //cyl.material.freeze()
 
-      const mm = this.addNewMaterial()
+      const mm = this.addNewMaterial(true)
       line.alphaIndex = alphaIndex
       line.material = mm.material
-      mm.setLineMesh(true)
       //line.material.freeze()
 
       //  box.name = `Mesh${this.meshes.length}}`
@@ -1362,10 +1358,9 @@ export default class Processor {
       cyl.material = this.addNewMaterial().material
       cyl.alphaIndex = alphaIndex
 
-      const mm = this.addNewMaterial()
+      const mm = this.addNewMaterial(true)
       line.alphaIndex = alphaIndex
       line.material = mm.material
-      mm.setLineMesh(true)
 
       // Apply WASM buffers directly to all meshes
       this.applyWasmBuffersToMesh(box, wasmBuffers)

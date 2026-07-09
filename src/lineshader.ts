@@ -9,7 +9,7 @@ export default class LineShaderMaterial {
    material: ShaderMaterial
    toolBuffer: UniformBuffer
    renderMode = 0
-   isLineMesh = false // Track current lineMesh state
+   readonly isLineMesh: boolean // Fixed for this material's lifetime - see buildMaterial()
 
    static readonly vertexShader = `
    #define THIN_INSTANCES
@@ -44,7 +44,6 @@ export default class LineShaderMaterial {
    uniform int renderMode;
 
    uniform bool alphaMode;
-   uniform bool lineMesh;
    uniform vec3 minFeedColor;
    uniform vec3 maxFeedColor;
    uniform bool showTravels;
@@ -163,7 +162,6 @@ export default class LineShaderMaterial {
    const vec4 light_intensity = vec4(0.45, 0.7, 0.75, 0.75);
    varying vec3 eye_normal;
 
-   uniform bool lineMesh;
    uniform bool alphaMode;
    uniform bool progressMode;
    uniform float ghostAlpha;
@@ -193,7 +191,7 @@ export default class LineShaderMaterial {
             diffuseColor.a = fShow >= 0.0 || !alphaMode ? 0.99 : ghostAlpha;
          }
 
-        if(lineMesh) {
+        #ifdef LINE_MESH
             if(fIsPerimeter < 1.0)
             {
                if(all(lessThan(diffuseColor.rgb,lowerBound.rgb))) {
@@ -208,9 +206,7 @@ export default class LineShaderMaterial {
             diffuseColor = vec4(diffuseColor.rgb, diffuseColor.a);
             }
             gl_FragColor = diffuseColor;
-         }
-         else
-         {
+         #else
             vec3 normal = normalize(eye_normal);
             float NdotL = abs(dot(normal, LIGHT_TOP_DIR));
             float intensity = light_intensity.x + NdotL * light_intensity.y;
@@ -230,11 +226,12 @@ export default class LineShaderMaterial {
             }
 
             gl_FragColor = vec4(lit, diffuseColor.a);
-         }
+         #endif
    }`
 
-   constructor(scene: Scene) {
+   constructor(scene: Scene, isLineMesh: boolean = false) {
       this.scene = scene
+      this.isLineMesh = isLineMesh
       this.buildMaterial()
    }
 
@@ -275,7 +272,6 @@ export default class LineShaderMaterial {
                'alphaMode',
                'progressMode',
                'progressColor',
-               'lineMesh',
                'showSupports',
                'utime',
                'minFeedColor',
@@ -285,6 +281,19 @@ export default class LineShaderMaterial {
                'ghostAlpha',
                'useSpecular',
             ],
+            // Every LineShaderMaterial instance compiles from the exact same vertex/fragment
+            // source strings, so Babylon's Effect cache (keyed on source + defines) would
+            // otherwise hand box/cylinder/line materials the SAME underlying compiled program -
+            // and with it, the same uniform storage. lineMesh used to be a plain uniform, and
+            // every material instance (box/cyl AND line) writing to "their own" lineMesh uniform
+            // was actually racing to overwrite one shared value: whichever material happened to
+            // bind most recently (e.g. during GPU picking or a shadow/depth pre-pass over
+            // disabled meshes) silently won for every OTHER material sharing that effect too,
+            // making "Force Line Rendering" intermittently render solid black (line geometry
+            // rendered through the lit branch, which has no valid normals for a Lines mesh). A
+            // define forces box/cyl and line materials into two genuinely separate compiled
+            // effects, so there's no shared mutable state to race over.
+            defines: this.isLineMesh ? ['#define LINE_MESH'] : [],
          },
       )
 
@@ -297,7 +306,6 @@ export default class LineShaderMaterial {
             .getEffect()
             ?.setFloat('animationLength', 5000)
             .setVector4('progressColor', new Vector4(0, 1, 0, 1))
-            .setBool('lineMesh', false) // Default to false (lighting enabled)
             .setFloat3('minFeedColor', 0, 0, 1) // Matches the previous hardcoded blue->red gradient
             .setFloat3('maxFeedColor', 1, 0, 0)
             .setBool('showTravels', true)
@@ -420,31 +428,10 @@ export default class LineShaderMaterial {
       })
    }
 
-   setLineMesh(mode: boolean) {
-      this.isLineMesh = mode
-      
-      // Immediate update if effect is ready
-      if (this.material.getEffect()?.isReady()) {
-         this.material.getEffect()?.setBool('lineMesh', mode)
-      }
-      
-      // Also schedule update for next bind in case effect wasn't ready
-      this.material.onBindObservable.addOnce(() => {
-         this.material.getEffect()?.setBool('lineMesh', mode)
-      })
-   }
-
    showSupports(show: boolean) {
       // this.material.onBindObservable.addOnce(() => {
       //    this.material.getEffect()?.setBool('showSupports', show)
       // })
-   }
-
-   refreshMaterialState() {
-      // Force refresh of the lineMesh uniform to ensure correct state
-      if (this.material.getEffect()?.isReady()) {
-         this.material.getEffect()?.setBool('lineMesh', this.isLineMesh)
-      }
    }
 
    dispose() {
