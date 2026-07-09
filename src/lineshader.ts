@@ -331,10 +331,24 @@ export default class LineShaderMaterial {
       })
    }
 
+   // Called on every single simulation/scrub step (unlike the other setters here, which only fire
+   // on rare user settings changes) - unconditionally queuing a new addOnce every call is a real,
+   // unbounded leak for any material whose mesh isn't currently the active mesh-mode variant (2 of
+   // every 3 box/cylinder/line materials per chunk), since onBindObservable only fires for a
+   // material actually bound to render a visible mesh: those queued callbacks pile up forever and
+   // never fire, which is what made long simulation runs (or slider scrubbing) progressively
+   // slower. The effect finishes compiling for all three variants at roughly the same time
+   // regardless of which is currently visible, so the immediate path below covers the overwhelming
+   // majority of calls after the first frame or two.
    updateCurrentFilePosition(position: number) {
-      this.material.onBindObservable.addOnce(() => {
-         this.material.getEffect()?.setFloat('currentPosition', position)
-      })
+      const effect = this.material.getEffect()
+      if (effect?.isReady()) {
+         effect.setFloat('currentPosition', position)
+      } else {
+         this.material.onBindObservable.addOnce(() => {
+            this.material.getEffect()?.setFloat('currentPosition', position)
+         })
+      }
    }
 
    getMaterial() {

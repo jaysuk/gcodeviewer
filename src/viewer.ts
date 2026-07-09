@@ -286,7 +286,8 @@ export default class Viewer {
       //this.loadInstrumentation()
    }
 
-   // Snap the orbit camera so it views the bed from the given direction (viewbox face/edge/corner metadata)
+   // Snap the orbit camera so it views the bed from the given direction (viewbox face/edge/corner
+   // metadata)
    setCameraDirection(direction: ViewBoxDirection) {
       if (!this.orbitCamera || !this.bed) {
          return
@@ -296,17 +297,35 @@ export default class Viewer {
          return
       }
       look.normalize()
-      const bedCenter = this.bed.getCenter()
-      const bedSize = this.bed.getSize()
-      // Straight-on views need more distance than corner views to keep the bed fully in frame
-      const zeroAxes = (direction.x === 0 ? 1 : 0) + (direction.y === 0 ? 1 : 0) + (direction.z === 0 ? 1 : 0)
-      const distance = Math.max(bedSize.x, bedSize.y, bedSize.z) * (zeroAxes === 2 ? 1.75 : 1.35)
-      const target = new Vector3(bedCenter.x, bedCenter.z, bedCenter.y)
+
+      // Target the loaded print's real center when available, matching frameToContent - targeting
+      // the bed's full Z-travel center (as this used to) put the target height at e.g. 125mm on a
+      // 250mm-travel printer, while the actual content (bed grid, a typical print) sits near
+      // Z=0-20mm, pushing everything toward the bottom of the frame in any non-top-down view.
+      const bounds = this.processor.getPrintBounds()
+      let target: Vector3
+      if (bounds) {
+         target = new Vector3(
+            (bounds.min.x + bounds.max.x) / 2,
+            (bounds.min.y + bounds.max.y) / 2,
+            (bounds.min.z + bounds.max.z) / 2,
+         )
+      } else {
+         const bedCenter = this.bed.getCenter()
+         target = new Vector3(bedCenter.x, -2, bedCenter.y)
+      }
       this.orbitCamera.setTarget(target)
-      this.orbitCamera.setPosition(target.subtract(look.scale(distance)))
+
+      // A provisional distance just lets ArcRotateCamera back-solve alpha/beta from the requested
+      // look direction - frameToViewport below sets the real, content-fitted radius afterward
+      const bedSize = this.bed.getSize()
+      const provisionalDistance = Math.max(bedSize.x, bedSize.y, bedSize.z, 1)
+      this.orbitCamera.setPosition(target.subtract(look.scale(provisionalDistance)))
       if (direction.x === 0 && direction.z === 0) {
          this.orbitCamera.alpha = (3 * Math.PI) / 2
       }
+
+      this.frameToViewport(this.framingCorners(bounds))
       this.scene?.render(true)
    }
 
