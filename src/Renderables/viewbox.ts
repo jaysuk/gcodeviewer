@@ -8,6 +8,8 @@ import { Axis, Space } from '@babylonjs/core/Maths/math.axis'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial'
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder'
+import { Mesh } from '@babylonjs/core/Meshes/mesh'
+import { HighlightLayer } from '@babylonjs/core/Layers/highlightLayer'
 // Scene.pick is a no-op stub unless the ray module is pulled in
 import '@babylonjs/core/Culling/ray'
 import { makeTextPlane } from './textplane'
@@ -25,6 +27,8 @@ export default class ViewBox {
    private camera: ArcRotateCamera
    private mainCamera: ArcRotateCamera
    private edgeMaterial: StandardMaterial
+   private highlightLayer: HighlightLayer
+   private hoveredMesh: Mesh | null = null
    visible = true
    onDirectionSelected: ((direction: ViewBoxDirection) => void) | null = null
 
@@ -45,6 +49,20 @@ export default class ViewBox {
 
       this.edgeMaterial = new StandardMaterial('viewboxEdgeMaterial', this.scene)
       this.edgeMaterial.diffuseColor = new Color3(0.5, 0.5, 0.5)
+
+      // Highlights whichever face/edge/corner is currently under the pointer, so it's clear what
+      // clicking right now would snap to - a HighlightLayer works uniformly across all three mesh
+      // shapes without needing every one of them to own a unique material (edges share one, and
+      // faces/corners aren't guaranteed to either)
+      this.highlightLayer = new HighlightLayer('viewboxHighlight', this.scene, {
+         // The gizmo's individual meshes (edges, corner spheres) are small on screen - the
+         // default blur size produced a glow too thin to clearly read as "this is what you're
+         // about to click"
+         blurHorizontalSize: 3,
+         blurVerticalSize: 3,
+      })
+      this.highlightLayer.outerGlow = true
+      this.highlightLayer.innerGlow = true
 
       const x = 3.9
       this.buildEdge('FrontLeft', new Vector3(-x, 0, -x))
@@ -79,6 +97,35 @@ export default class ViewBox {
       this.buildPlane('Top', new Vector3(0, -1, 0))
       this.buildPlane('Bottom', new Vector3(0, 1, 0))
 
+   }
+
+   // Pointer events only reach the main scene in the worker, so the caller forwards moves here too
+   // (this scene has only ~26 simple meshes regardless of model size, so picking on every move is
+   // cheap - unlike the main scene, which turns this off deliberately)
+   updateHover(x: number, y: number): void {
+      if (!this.visible) {
+         this.clearHover()
+         return
+      }
+      const pickResult = this.scene.pick(x, y, undefined, false, this.camera)
+      const mesh = pickResult.hit ? (pickResult.pickedMesh as Mesh) : null
+      if (mesh === this.hoveredMesh) {
+         return
+      }
+      if (this.hoveredMesh) {
+         this.highlightLayer.removeMesh(this.hoveredMesh)
+      }
+      this.hoveredMesh = mesh
+      if (mesh) {
+         this.highlightLayer.addMesh(mesh, new Color3(1, 1, 0))
+      }
+   }
+
+   clearHover(): void {
+      if (this.hoveredMesh) {
+         this.highlightLayer.removeMesh(this.hoveredMesh)
+         this.hoveredMesh = null
+      }
    }
 
    // Pointer events only reach the main scene in the worker, so the caller forwards taps here for manual picking

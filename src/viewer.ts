@@ -268,6 +268,10 @@ export default class Viewer {
       })
 
       this.scene.onPointerObservable.add((pointerInfo) => {
+         if (pointerInfo.type == PointerEventTypes.POINTERMOVE) {
+            this.viewBox?.updateHover(this.scene.pointerX, this.scene.pointerY)
+            return
+         }
          if (pointerInfo.type == PointerEventTypes.POINTERTAP) {
             const direction = this.viewBox?.pick(this.scene.pointerX, this.scene.pointerY)
             if (direction) {
