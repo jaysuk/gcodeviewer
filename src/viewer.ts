@@ -312,16 +312,23 @@ export default class Viewer {
       this.scene?.render(true)
    }
 
-   // Frames the camera on the loaded print's bounding box (when embedded, e.g. the Job Status
-   // tab) or the bed footprint otherwise. Call after a file load and whenever the view should
-   // reset to "show me everything". Ported from the consumer side (DWC) rather than developed
-   // fresh here, since the math is coordinate-system-agnostic and needs the real camera/engine,
-   // which only exist in this worker - a consumer can no longer reach `scene.activeCamera` itself.
-   frameToContent(isEmbedded: boolean) {
+   // Frames the camera on the loaded print's bounding box, or the bed footprint if nothing has
+   // been loaded yet (getPrintBounds() returns null until at least one extruding move has been
+   // parsed). Call after a file load and whenever the view should reset to "show me everything".
+   // Ported from the consumer side (DWC) rather than developed fresh here, since the math is
+   // coordinate-system-agnostic and needs the real camera/engine, which only exist in this worker
+   // - a consumer can no longer reach `scene.activeCamera` itself.
+   //
+   // isEmbedded is unused - a previous version gated print-bounds framing behind it (only frame on
+   // the print when embedded, always frame on the whole bed otherwise), which meant the standalone
+   // viewer page - the main way anyone actually looks at a loaded file - never framed on the
+   // loaded print at all, making anything smaller than the bed look like nothing had rendered.
+   // Kept as a parameter for API compatibility.
+   frameToContent(_isEmbedded: boolean) {
       if (!this.orbitCamera || !this.bed) {
          return
       }
-      const bounds = isEmbedded ? this.processor.getPrintBounds() : null
+      const bounds = this.processor.getPrintBounds()
       if (bounds) {
          const target = new Vector3(
             (bounds.min.x + bounds.max.x) / 2,

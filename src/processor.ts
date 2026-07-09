@@ -1396,11 +1396,14 @@ export default class Processor {
       console.log(`📊 Applied WASM buffers to ${mesh.name}: ${wasmBuffers.segmentCount} instances`)
    }
 
-   async setPerimeterOnly(perimeterOnly) {
+   // Parse/build-time filter (affects which segments get built into the mesh at all, not just a
+   // shader-level visibility toggle) - sticky across reload like zBelt/cncMode/workplace, applied
+   // whenever the caller next reloads. Previously triggered its own internal reload here, which
+   // both duplicated whatever reload the caller was already about to do and gave the caller no way
+   // to know when it finished to restore the current file position afterward (DWC had no watcher
+   // wired to this at all, since there was nothing it could safely await).
+   setPerimeterOnly(perimeterOnly: boolean) {
       this.perimeterOnly = perimeterOnly
-      if (this.originalFile) {
-         await this.loadFile(this.originalFile)
-      }
    }
 
    showSupports(show) {
